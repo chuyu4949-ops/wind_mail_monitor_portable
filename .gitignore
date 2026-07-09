@@ -1,0 +1,11 @@
+config/config.yaml
+data/
+database/
+logs/
+reports/
+__pycache__/
+*.pyc
+.runtime/
+dist/
+build/
+*.spec

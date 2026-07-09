@@ -1,0 +1,48 @@
+mail:
+  email_account: ""
+  email_auth_code: ""
+  imap_server: "imap.163.com"
+  smtp_server: "smtp.163.com"
+  imap_port: 993
+  smtp_port: 465
+  use_ssl: true
+  type: "163_personal"
+
+filter:
+  allowed_senders:
+    - "adata@hsrxsteel.com"
+    - "molas-b300@wind.molascloud.com"
+  subject_keywords:
+    - "测风"
+    - "测风数据"
+    - "风速数据"
+    - "Molas B300"
+    - "HN-"
+    - "GX-"
+  attachment_extensions:
+    - ".rld"
+    - ".zip"
+    - ".txt"
+    - ".csv"
+    - ".xls"
+    - ".xlsx"
+    - ".rar"
+
+rules:
+  file_size_warning_kb: 20
+  continuous_missing_warning_days: 2
+
+report:
+  send_time: "09:00"
+  statistic_period: "previous_day_00_to_24"
+  report_receivers: []
+  report_cc: []
+  generate_excel: true
+  generate_html: true
+  send_email: true
+
+storage:
+  data_dir: "./data"
+  report_dir: "./reports"
+  log_dir: "./logs"
+  database_path: "./database/wind_mail_monitor.db"

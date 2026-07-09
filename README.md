@@ -1,39 +1,78 @@
 # 测风数据邮件日报监测工具
 
-本仓库保存测风数据邮件日报监测工具的源码交付包。
+作者：楚煜
 
-## 文件
+Windows 本地便携工具，用于读取 163/188 邮箱中的测风数据邮件，下载并记录附件，按规则识别缺失与异常，生成 Excel/HTML 日报，并可选择通过 SMTP 发送日报邮件。
 
-- `wind-mail-monitor-source.zip`：已清理源码包，包含 GUI、命令行入口、核心模块、测试和示例配置。
-- `src/mail_client.py`：网易 163/188 邮箱 IMAP ID 兼容修复后的邮件读取模块，可直接在线查看关键修复代码。
+## 功能
 
-## 网易邮箱兼容
+- 图形界面配置邮箱、筛选规则、日报收件人与运行日期
+- 支持 163/188 邮箱 IMAP/SMTP，包含网易 IMAP ID 兼容修复
+- 按发件人、主题关键词、附件扩展名筛选邮件
+- 支持 `.rld`、Molas B300 `.zip` 以及常见表格/文本附件
+- SQLite 保存邮件、附件和每日状态
+- 识别小文件、缺失数据和连续缺失风险
+- 生成 Excel 和 HTML 日报
+- 可选择只生成本地日报，不发送邮件
 
-已按网易邮箱客服要求，在 IMAP 登录成功后发送 RFC 2971 IMAP ID 信息：
+## 目录
 
-- `name`: `wind-mail-monitor`
-- `version`: `1.0.1`
-- `vendor`: `Codex local app`
-- `support-email`: `support@example.com`
+```text
+config/                       配置模板
+docs/                         使用说明书
+release/WindMailMonitor-portable.zip
+                               可直接解压双击运行的便携版
+src/                          核心功能模块
+tests/                        单元测试
+gui.py                        图形界面入口
+main.py                       命令行入口
+requirements.txt              依赖说明
+wind-mail-monitor-source.zip  源码交付包
+```
 
-Python 标准库 `imaplib` 默认没有公开 ID 命令，因此代码中注册了 `imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))`，再调用 `_simple_command("ID", payload)` 发送客户端信息。
+## 直接使用
 
-同时兼容处理了部分网易邮件头返回 `unknown-8bit` 导致标题解码失败的问题。
+1. 下载 `release/WindMailMonitor-portable.zip`。
+2. 解压后双击 `WindMailMonitor.exe`。
+3. 在界面中填写 163/188 邮箱账号、客户端授权码、日报接收人和筛选规则。
+4. 点击 `保存设置`。
+5. 在 `运行` 页选择统计日期并点击 `立即生成日报`。
 
-## 安全说明
+详细说明见：
 
-源码包不包含本地运行时、日志、数据库、下载附件、日报文件或真实邮箱授权码。
+```text
+docs/测风数据邮件日报监测工具说明书.md
+```
 
-本地真实配置文件 `config/config.yaml` 不应提交到 GitHub；请使用源码包中的 `config/config.example.yaml` 作为模板。
+## 本地源码运行
 
-## 验证
+开发运行需要 Python 3.10+。
 
-上传前已执行：
+```powershell
+copy config\config.example.yaml config\config.yaml
+python gui.py
+```
+
+命令行生成日报：
+
+```powershell
+python main.py --date 2026-07-08 --no-send
+```
+
+仅根据数据库重新生成日报：
+
+```powershell
+python main.py --date 2026-07-08 --skip-mail --no-send
+```
+
+## 测试
 
 ```powershell
 python -m unittest discover -s tests
 ```
 
-结果：3 个测试全部通过。
+## 安全说明
 
-本地便携版已用真实 IMAP 读取流程验证：可登录邮箱、发送 IMAP ID、搜索候选邮件、保存附件并生成 Excel/HTML 日报。验证发送日报邮件时可先勾选“不发送日报邮件”做预览。
+- `config/config.yaml` 会保存本地邮箱账号和客户端授权码，请勿提交到 GitHub。
+- `data/`、`database/`、`logs/`、`reports/` 为本地运行数据目录，请勿提交真实业务数据。
+- 客户端授权码不是网页登录密码，请在邮箱网页端开启 IMAP/SMTP 后生成。

@@ -1,0 +1,1 @@
+"""Wind mail monitor package."""
