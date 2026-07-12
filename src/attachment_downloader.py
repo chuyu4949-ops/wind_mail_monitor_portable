@@ -4,7 +4,7 @@ from datetime import date
 from logging import Logger
 from pathlib import Path
 
-from .mast_parser import parse_attachment
+from .mast_parser import parse_attachment, payload_has_stat_date
 from .models import AttachmentRecord, EmailRecord, MailMessage, SavedAttachment
 
 
@@ -23,12 +23,17 @@ def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], 
             has_attachment=1 if mail.attachments else 0,
         )
         for filename, content in mail.attachments:
-            parsed = parse_attachment(filename, subject=mail.subject)
+            parsed = parse_attachment(filename, subject=mail.subject, default_year=stat_date.year)
             mast_dir = data_dir / (parsed["normalized_mast_id"] or "未识别附件")
             mast_dir.mkdir(parents=True, exist_ok=True)
-            path = _unique_path(mast_dir / filename)
-            path.write_bytes(content)
-            parsed = parse_attachment(filename, path, mail.subject)
+            path = _deduplicated_path(mast_dir / filename, content)
+            if not path.exists():
+                path.write_bytes(content)
+
+            parsed = parse_attachment(filename, path, mail.subject, default_year=stat_date.year)
+            stat = stat_date.isoformat()
+            if parsed.get("data_date") != stat and parsed.get("attachment_date") != stat and payload_has_stat_date(content, stat_date):
+                parsed["data_date"] = stat
 
             file_size_bytes = len(content)
             file_size_kb = round(file_size_bytes / 1024, 2)
@@ -60,8 +65,10 @@ def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], 
     return saved
 
 
-def _unique_path(path: Path) -> Path:
+def _deduplicated_path(path: Path, content: bytes) -> Path:
     if not path.exists():
+        return path
+    if _same_content(path, content):
         return path
     stem = path.stem
     suffix = path.suffix
@@ -70,4 +77,13 @@ def _unique_path(path: Path) -> Path:
         candidate = path.with_name(f"{stem}_重复{counter}{suffix}")
         if not candidate.exists():
             return candidate
+        if _same_content(candidate, content):
+            return candidate
         counter += 1
+
+
+def _same_content(path: Path, content: bytes) -> bool:
+    try:
+        return path.read_bytes() == content
+    except OSError:
+        return False

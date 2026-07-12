@@ -10,15 +10,10 @@ mail:
 
 filter:
   allowed_senders:
-    - "adata@hsrxsteel.com"
-    - "molas-b300@wind.molascloud.com"
+    - "******@***.com"
   subject_keywords:
-    - "测风"
-    - "测风数据"
-    - "风速数据"
-    - "Molas B300"
-    - "HN-"
-    - "GX-"
+    - "塔号"
+    - "邮箱主题关键词"
   attachment_extensions:
     - ".rld"
     - ".zip"

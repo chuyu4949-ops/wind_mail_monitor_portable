@@ -8,6 +8,7 @@ from email.header import decode_header
 from email.utils import getaddresses, parsedate_to_datetime
 from logging import Logger
 
+from .mast_parser import filename_starts_with_six_digits, parse_attachment, payload_has_stat_date
 from .models import MailMessage
 
 
@@ -21,14 +22,19 @@ IMAP_ID = {
 
 def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
     mail_cfg = config["mail"]
-    account = mail_cfg.get("email_account", "")
-    auth_code = mail_cfg.get("email_auth_code", "")
-    if not account or account.startswith("请在本地填写") or not auth_code or auth_code.startswith("请在本地填写"):
-        raise RuntimeError("请先在软件界面填写 163 邮箱账号和客户端授权码")
+    account = mail_cfg.get("email_account", "").strip()
+    auth_code = mail_cfg.get("email_auth_code", "").strip()
+    if not account or not auth_code or account.startswith("请") or auth_code.startswith("请"):
+        raise RuntimeError("请先在软件界面填写 163 邮箱账号和客户端授权码。注意：客户端授权码不是网页登录密码。")
 
     for attempt in range(1, 4):
         try:
             return _fetch_once(config, stat_date, logger)
+        except RuntimeError as exc:
+            logger.exception("邮件读取失败，第 %s 次：%s", attempt, exc)
+            if _is_login_error(exc) or attempt == 3:
+                raise
+            time.sleep(30)
         except Exception as exc:
             logger.exception("邮件读取失败，第 %s 次：%s", attempt, exc)
             if attempt == 3:
@@ -41,13 +47,17 @@ def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessa
     mail_cfg = config["mail"]
     client = imaplib.IMAP4_SSL(mail_cfg["imap_server"], int(mail_cfg["imap_port"]))
     try:
-        client.login(mail_cfg["email_account"], mail_cfg["email_auth_code"])
+        try:
+            client.login(mail_cfg["email_account"], mail_cfg["email_auth_code"])
+        except imaplib.IMAP4.error as exc:
+            raise RuntimeError(_login_error_message(exc)) from exc
+
         logger.info("邮箱登录成功")
         _send_imap_id(client, logger)
         _select_inbox(client)
 
         since = _imap_date(stat_date)
-        search_before = _imap_date(stat_date + timedelta(days=1))
+        search_before = _imap_date(_search_before_date(stat_date))
         status, data = client.search(None, f'(SINCE "{since}" BEFORE "{search_before}")')
         if status != "OK":
             detail = _decode_imap_response(data)
@@ -60,7 +70,7 @@ def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessa
                 continue
             msg = email.message_from_bytes(fetch_data[0][1])
             mail = _to_mail_message(uid.decode("ascii", errors="ignore"), msg, config)
-            if _message_matches(mail, config):
+            if _message_matches(mail, config, stat_date):
                 messages.append(mail)
 
         logger.info("搜索到候选邮件 %s 封", len(messages))
@@ -141,12 +151,41 @@ def _to_mail_message(uid: str, msg: email.message.Message, config: dict) -> Mail
     return MailMessage(uid, subject, sender_name, sender_email, received, attachments)
 
 
-def _message_matches(mail: MailMessage, config: dict) -> bool:
-    allowed_senders = {item.lower() for item in config["filter"].get("allowed_senders", [])}
-    keywords = config["filter"].get("subject_keywords", [])
+def _message_matches(mail: MailMessage, config: dict, stat_date: date | None = None) -> bool:
+    allowed_senders = _active_allowed_senders(config["filter"].get("allowed_senders", []))
+    keywords = _active_subject_keywords(config["filter"].get("subject_keywords", []))
     sender_ok = not allowed_senders or mail.sender_email.lower() in allowed_senders
-    subject_ok = not keywords or any(keyword.lower() in mail.subject.lower() for keyword in keywords)
-    return bool(mail.attachments) and sender_ok and subject_ok
+    keyword_ok = not keywords or any(keyword.lower() in mail.subject.lower() for keyword in keywords)
+    attachment_name_ok = any(filename_starts_with_six_digits(filename) for filename, _ in mail.attachments)
+    if not (bool(mail.attachments) and sender_ok and (keyword_ok or attachment_name_ok)):
+        return False
+    if stat_date is None:
+        return True
+    received_date = mail.received_time.date()
+    if received_date <= stat_date + timedelta(days=1):
+        return True
+    return _message_has_stat_date(mail, stat_date)
+
+
+def _active_allowed_senders(values: list[str]) -> set[str]:
+    placeholders = {"******@***.com", "***@***.com", "example@example.com"}
+    return {item.strip().lower() for item in values if item.strip() and item.strip().lower() not in placeholders}
+
+
+def _active_subject_keywords(values: list[str]) -> list[str]:
+    placeholders = {"塔号", "邮箱主题关键词"}
+    return [item.strip() for item in values if item.strip() and item.strip() not in placeholders]
+
+
+def _message_has_stat_date(mail: MailMessage, stat_date: date) -> bool:
+    expected = stat_date.isoformat()
+    for filename, content in mail.attachments:
+        parsed = parse_attachment(filename, subject=mail.subject, default_year=stat_date.year)
+        if parsed.get("data_date") == expected or parsed.get("attachment_date") == expected:
+            return True
+        if payload_has_stat_date(content, stat_date):
+            return True
+    return False
 
 
 def _decode_value(value: str) -> str:
@@ -177,9 +216,28 @@ def _decode_imap_response(data: object) -> str:
         return ""
     if isinstance(data, (bytes, bytearray)):
         return bytes(data).decode("utf-8", errors="replace")
+    if isinstance(data, tuple):
+        return " | ".join(_decode_imap_response(item) for item in data if item)
     if isinstance(data, list):
         return " | ".join(_decode_imap_response(item) for item in data if item)
     return str(data)
+
+
+def _login_error_message(exc: BaseException) -> str:
+    detail = _decode_imap_response(exc.args)
+    return (
+        "邮箱登录失败：账号或客户端授权码未通过 163 邮箱验证。\n"
+        "请检查：\n"
+        "1. 邮箱账号是否填写完整，例如 xxx@163.com；\n"
+        "2. 客户端授权码是否为 163 网页邮箱生成的授权码，不是网页登录密码；\n"
+        "3. 网页邮箱“设置/POP3/SMTP/IMAP”中是否已开启 IMAP/SMTP 服务；\n"
+        "4. 如果刚修改过密码或安全设置，请重新生成客户端授权码并保存设置。\n"
+        f"服务器返回：{detail}"
+    )
+
+
+def _is_login_error(exc: RuntimeError) -> bool:
+    return str(exc).startswith("邮箱登录失败：")
 
 
 def _parse_sender(value: str) -> tuple[str, str]:
@@ -190,3 +248,11 @@ def _parse_sender(value: str) -> tuple[str, str]:
 def _imap_date(value: date) -> str:
     months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     return f"{value.day:02d}-{months[value.month - 1]}-{value.year}"
+
+
+def _search_before_date(stat_date: date, today: date | None = None) -> date:
+    current = today or date.today()
+    normal_before = stat_date + timedelta(days=2)
+    if stat_date < current - timedelta(days=2):
+        return current + timedelta(days=1)
+    return normal_before

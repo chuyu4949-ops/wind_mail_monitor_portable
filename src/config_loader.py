@@ -80,10 +80,21 @@ def _apply_defaults(config: dict[str, Any]) -> None:
     config["filter"].setdefault("subject_keywords", [])
     config["filter"].setdefault("attachment_extensions", [".rld", ".zip"])
     config["rules"].setdefault("file_size_warning_kb", 20)
-    config["report"].setdefault("report_receivers", [])
-    config["report"].setdefault("report_cc", [])
+    config["report"]["report_receivers"] = _as_list(config["report"].get("report_receivers", []))
+    config["report"]["report_cc"] = _as_list(config["report"].get("report_cc", []))
     config["report"].setdefault("send_email", True)
     config["storage"].setdefault("data_dir", "./data")
     config["storage"].setdefault("report_dir", "./reports")
     config["storage"].setdefault("log_dir", "./logs")
     config["storage"].setdefault("database_path", "./database/wind_mail_monitor.db")
+
+
+def _as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, dict) or value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    return [item.strip() for item in text.split(",") if item.strip()]

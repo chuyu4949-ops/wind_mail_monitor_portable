@@ -7,17 +7,18 @@ from logging import Logger
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from .licensing.license_watermark import watermark_html, watermark_xlsx_rows
 from .models import DailyResult
 
 
-def generate_html_report(report_dir: Path, stat_date: date, result: DailyResult, logger: Logger) -> Path:
+def generate_html_report(report_dir: Path, stat_date: date, result: DailyResult, logger: Logger, license_payload: dict | None = None) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"测风数据接收日报_{stat_date.isoformat()}.html"
     received_names = "、".join(r["display_name"] for r in result.received_rows) or "无"
     body = f"""<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>测风数据接收日报 - {stat_date}</title>
-<style>body{{font-family:Microsoft YaHei,Arial,sans-serif;line-height:1.6;color:#222}}table{{border-collapse:collapse;width:100%;margin:12px 0}}th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left}}th{{background:#f3f6fb}}.warn{{color:#b00020;font-weight:600}}</style></head>
+<style>body{{font-family:Microsoft YaHei,Arial,sans-serif;line-height:1.6;color:#222}}table{{border-collapse:collapse;width:100%;margin:12px 0}}th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left}}th{{background:#f3f6fb}}.warn{{color:#b00020;font-weight:600}}.license-watermark{{margin-top:28px;padding-top:12px;border-top:1px solid #d9e2f2;color:#52627a}}.license-watermark table{{max-width:760px}}</style></head>
 <body>
 <h2>测风数据接收日报 - {stat_date}</h2>
 <p>统计周期：{stat_date} 00:00:00 至 {stat_date} 23:59:59</p>
@@ -37,17 +38,20 @@ def generate_html_report(report_dir: Path, stat_date: date, result: DailyResult,
 <h3>六、未识别附件</h3>{_html_table(result.unknown_rows, ["subject", "filename", "file_size_kb"])}
 <h3>七、处理建议</h3>
 <ol><li>联系缺失测风塔对应的数据发送单位核查是否漏发。</li><li>对连续缺失 2 天及以上的测风塔建立补发跟踪。</li><li>对小于 20 KB 的附件进行人工复核。</li></ol>
+{watermark_html(license_payload)}
 </body></html>"""
     path.write_text(body, encoding="utf-8")
     logger.info("HTML 日报生成成功：%s", path)
     return path
 
 
-def generate_xlsx_report(report_dir: Path, stat_date: date, result: DailyResult, logger: Logger) -> Path:
+def generate_xlsx_report(report_dir: Path, stat_date: date, result: DailyResult, logger: Logger, license_payload: dict | None = None) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"测风数据接收日报_{stat_date.isoformat()}.xlsx"
+    summary_rows = [["指标", "数量"], ["今日收到测风塔数量", len(result.received_rows)], ["今日附件数量", len(result.attachment_rows)], ["今日缺失提醒", len(result.missing_rows)], ["连续缺失提醒", len(result.continuous_missing_rows)], ["文件大小异常", len(result.size_warning_rows)], ["未识别附件", len(result.unknown_rows)]]
+    summary_rows.extend(watermark_xlsx_rows(license_payload))
     sheets = [
-        ("总体汇总", [["指标", "数量"], ["今日收到测风塔数量", len(result.received_rows)], ["今日附件数量", len(result.attachment_rows)], ["今日缺失提醒", len(result.missing_rows)], ["连续缺失提醒", len(result.continuous_missing_rows)], ["文件大小异常", len(result.size_warning_rows)], ["未识别附件", len(result.unknown_rows)]]),
+        ("总体汇总", summary_rows),
         ("今日接收清单", _rows(result.received_rows, ["normalized_mast_id", "display_name", "attachment_count", "min_file_size_kb"])),
         ("缺失提醒", _rows(result.missing_rows, ["normalized_mast_id", "display_name", "continuous_missing_days", "missing_status"])),
         ("连续缺失提醒", _rows(result.continuous_missing_rows, ["normalized_mast_id", "display_name", "continuous_missing_days", "missing_status"])),

@@ -24,9 +24,12 @@ def _dump_config(config: dict[str, Any]) -> str:
 def _write_value(lines: list[str], key: str, value: Any, indent: int) -> None:
     prefix = " " * indent
     if isinstance(value, list):
-        lines.append(f"{prefix}{key}:")
-        for item in value:
-            lines.append(f"{prefix}  - {_format_scalar(item)}")
+        if value:
+            lines.append(f"{prefix}{key}:")
+            for item in value:
+                lines.append(f"{prefix}  - {_format_scalar(item)}")
+        else:
+            lines.append(f"{prefix}{key}: []")
     elif isinstance(value, bool):
         lines.append(f"{prefix}{key}: {'true' if value else 'false'}")
     else:

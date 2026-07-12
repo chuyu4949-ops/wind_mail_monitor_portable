@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -106,9 +107,21 @@ class Database:
                 """,
                 [
                     (
-                        r.email_uid, r.subject, r.sender_email, r.raw_device_code, r.normalized_mast_id,
-                        r.display_name, r.filename, r.file_path, r.file_extension, r.file_size_bytes,
-                        r.file_size_kb, r.email_received_date, r.attachment_date, r.data_date, r.size_status
+                        r.email_uid,
+                        r.subject,
+                        r.sender_email,
+                        r.raw_device_code,
+                        r.normalized_mast_id,
+                        r.display_name,
+                        r.filename,
+                        r.file_path,
+                        r.file_extension,
+                        r.file_size_bytes,
+                        r.file_size_kb,
+                        r.email_received_date,
+                        r.attachment_date,
+                        r.data_date,
+                        r.size_status,
                     )
                     for r in rows
                 ],
@@ -120,11 +133,24 @@ class Database:
     def attachment_rows_for_date(self, stat_date: str) -> list[dict]:
         conn = self.connect()
         try:
+            next_date = (date.fromisoformat(stat_date) + timedelta(days=1)).isoformat()
             rows = conn.execute(
-                "select * from attachment_records where email_received_date = ? order by normalized_mast_id, filename",
-                (stat_date,),
+                """
+                select * from attachment_records
+                where email_received_date = ?
+                   or attachment_date = ?
+                   or data_date = ?
+                   or replace(file_path, '\\', '/') like ?
+                   or (
+                        email_received_date = ?
+                        and coalesce(attachment_date, '') = ''
+                        and coalesce(data_date, '') = ''
+                   )
+                order by normalized_mast_id, filename, id
+                """,
+                (stat_date, stat_date, stat_date, f"%/{stat_date}/%", next_date),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return _deduplicate_attachment_rows([dict(row) for row in rows])
         finally:
             conn.close()
 
@@ -132,6 +158,32 @@ class Database:
         conn = self.connect()
         try:
             rows = conn.execute("select * from daily_mast_status where stat_date = ?", (stat_date,)).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def known_masts_before_date(self, stat_date: str) -> list[dict]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                select normalized_mast_id, max(display_name) as display_name
+                from attachment_records
+                where coalesce(normalized_mast_id, '') <> ''
+                  and (
+                    (coalesce(data_date, '') <> '' and data_date < ?)
+                    or (coalesce(attachment_date, '') <> '' and attachment_date < ?)
+                    or (
+                        coalesce(data_date, '') = ''
+                        and coalesce(attachment_date, '') = ''
+                        and email_received_date < ?
+                    )
+                  )
+                group by normalized_mast_id
+                order by normalized_mast_id
+                """,
+                (stat_date, stat_date, stat_date),
+            ).fetchall()
             return [dict(row) for row in rows]
         finally:
             conn.close()
@@ -158,9 +210,17 @@ class Database:
                 """,
                 [
                     (
-                        r.stat_date, r.normalized_mast_id, r.display_name, r.received, r.attachment_count,
-                        r.min_file_size_kb, r.has_size_warning, r.missing_today, r.continuous_missing_days,
-                        r.missing_status, r.recovered_today
+                        r.stat_date,
+                        r.normalized_mast_id,
+                        r.display_name,
+                        r.received,
+                        r.attachment_count,
+                        r.min_file_size_kb,
+                        r.has_size_warning,
+                        r.missing_today,
+                        r.continuous_missing_days,
+                        r.missing_status,
+                        r.recovered_today,
                     )
                     for r in rows
                 ],
@@ -168,3 +228,40 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
+
+def _deduplicate_attachment_rows(rows: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[tuple] = set()
+    for row in rows:
+        stat_marker = (
+            row.get("data_date")
+            or row.get("attachment_date")
+            or _date_from_path(str(row.get("file_path", "")))
+            or row.get("email_received_date")
+        )
+        key = (
+            stat_marker,
+            row.get("normalized_mast_id") or "",
+            row.get("filename") or "",
+            row.get("file_size_bytes") or 0,
+            row.get("sender_email") or "",
+            row.get("subject") or "",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _date_from_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    for part in normalized.split("/"):
+        if len(part) == 10:
+            try:
+                date.fromisoformat(part)
+                return part
+            except ValueError:
+                pass
+    return ""
