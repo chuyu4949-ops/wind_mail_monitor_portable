@@ -20,6 +20,8 @@ IMAP_ID = {
     "support-email": "support@example.com",
 }
 
+IMAP_TIMEOUT_SECONDS = 60
+
 
 def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
     mail_cfg = apply_mail_provider_defaults(config["mail"])
@@ -46,7 +48,11 @@ def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMe
 
 def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
     mail_cfg = apply_mail_provider_defaults(config["mail"])
-    client = imaplib.IMAP4_SSL(mail_cfg["imap_server"], int(mail_cfg["imap_port"]))
+    client = imaplib.IMAP4_SSL(
+        mail_cfg["imap_server"],
+        int(mail_cfg["imap_port"]),
+        timeout=IMAP_TIMEOUT_SECONDS,
+    )
     try:
         try:
             client.login(mail_cfg["email_account"], mail_cfg["email_auth_code"])
@@ -59,13 +65,19 @@ def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessa
 
         since = _imap_date(stat_date)
         search_before = _imap_date(_search_before_date(stat_date))
-        status, data = client.search(None, f'(SINCE "{since}" BEFORE "{search_before}")')
+        # QQ Mail accepts date criteria as separate IMAP arguments. Passing the
+        # whole expression as one parenthesized argument can silently match the
+        # entire inbox, causing very large mailboxes to appear frozen.
+        status, data = client.search(None, "SINCE", since, "BEFORE", search_before)
         if status != "OK":
             detail = _decode_imap_response(data)
             raise RuntimeError(f"IMAP 搜索失败：{detail}")
 
+        message_ids = data[0].split() if data and data[0] else []
+        logger.info("日期范围内候选邮件：%s 封", len(message_ids))
+
         messages: list[MailMessage] = []
-        for uid in data[0].split():
+        for index, uid in enumerate(message_ids, start=1):
             fetch_status, fetch_data = client.fetch(uid, "(RFC822)")
             if fetch_status != "OK" or not fetch_data:
                 continue
@@ -73,6 +85,8 @@ def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessa
             mail = _to_mail_message(uid.decode("ascii", errors="ignore"), msg, config)
             if _message_matches(mail, config, stat_date):
                 messages.append(mail)
+            if index % 50 == 0 or index == len(message_ids):
+                logger.info("邮件读取进度：%s/%s", index, len(message_ids))
 
         logger.info("搜索到候选邮件 %s 封", len(messages))
         return messages

@@ -3,6 +3,7 @@
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 import zipfile
 import base64
 import json
@@ -24,7 +25,7 @@ from src.licensing.license_validator import validate_signed_license
 from src.licensing.license_watermark import watermark_text
 from src.licensing.machine_fingerprint import MachineFingerprint, _normalize, _short_machine_code
 from src.licensing.time_guard import check_and_update_time_state
-from src.mail_client import _message_matches, _search_before_date
+from src.mail_client import _fetch_once, _message_matches, _search_before_date
 from src.mail_provider import apply_mail_provider_defaults, provider_for_account
 from src.mast_parser import parse_attachment
 from src.models import DailyStatusRow, MailMessage
@@ -183,6 +184,27 @@ class CoreTests(unittest.TestCase):
         self.assertIn('type: "auto"', text)
         self.assertNotIn("15274958341", text)
         self.assertNotIn("secret-auth-code", text)
+
+    @patch("src.mail_client.imaplib.IMAP4_SSL")
+    def test_imap_search_passes_date_criteria_as_separate_arguments(self, imap_ssl: MagicMock) -> None:
+        client = imap_ssl.return_value
+        client.login.return_value = ("OK", [])
+        client.select.return_value = ("OK", [b"1"])
+        client.search.return_value = ("OK", [b""])
+        client._simple_command.return_value = ("OK", [])
+        client.logout.return_value = ("BYE", [])
+        config = {
+            "mail": {
+                "email_account": "user@qq.com",
+                "email_auth_code": "auth-code",
+            },
+            "filter": {"allowed_senders": [], "subject_keywords": [], "attachment_extensions": []},
+        }
+
+        _fetch_once(config, date(2026, 7, 14), MagicMock())
+
+        client.search.assert_called_once_with(None, "SINCE", "14-Jul-2026", "BEFORE", "16-Jul-2026")
+        imap_ssl.assert_called_once_with("imap.qq.com", 993, timeout=60)
 
     def test_late_historical_mail_requires_explicit_stat_date(self) -> None:
         config = {

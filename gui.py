@@ -6,9 +6,8 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timedelta
-from io import StringIO
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -487,18 +486,12 @@ class MonitorApp(tk.Tk):
             argv.append("--skip-mail")
         old_argv = sys.argv[:]
         sys.argv = argv
-        buffer = StringIO()
+        writer = _QueueWriter(self.output_queue)
         try:
-            with redirect_stdout(buffer):
+            with redirect_stdout(writer), redirect_stderr(writer):
                 code = monitor_main.main()
-            output = buffer.getvalue()
-            if output:
-                self.output_queue.put(output)
             self.output_queue.put("\n运行完成。\n" if code == 0 else f"\n运行失败，退出码：{code}\n")
         except Exception as exc:
-            output = buffer.getvalue()
-            if output:
-                self.output_queue.put(output)
             self.output_queue.put(f"\n运行失败：{exc}\n")
             _write_runtime_status(
                 {
@@ -694,6 +687,19 @@ def _write_runtime_status(payload: dict) -> None:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+class _QueueWriter:
+    def __init__(self, output_queue: queue.Queue[str]) -> None:
+        self.output_queue = output_queue
+
+    def write(self, text: str) -> int:
+        if text:
+            self.output_queue.put(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 def _split_lines(value: str) -> list[str]:
