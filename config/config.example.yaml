@@ -1,12 +1,13 @@
 mail:
   email_account: ""
   email_auth_code: ""
-  imap_server: "imap.163.com"
-  smtp_server: "smtp.163.com"
+  imap_server: ""
+  smtp_server: ""
   imap_port: 993
   smtp_port: 465
   use_ssl: true
-  type: "163_personal"
+  smtp_starttls: false
+  type: "auto"
 
 filter:
   allowed_senders:

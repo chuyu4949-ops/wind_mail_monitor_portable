@@ -25,6 +25,7 @@ from src.licensing.license_watermark import watermark_text
 from src.licensing.machine_fingerprint import MachineFingerprint, _normalize, _short_machine_code
 from src.licensing.time_guard import check_and_update_time_state
 from src.mail_client import _message_matches, _search_before_date
+from src.mail_provider import apply_mail_provider_defaults, provider_for_account
 from src.mast_parser import parse_attachment
 from src.models import DailyStatusRow, MailMessage
 from src.report_generator import generate_html_report, generate_xlsx_report
@@ -155,6 +156,33 @@ class CoreTests(unittest.TestCase):
             }
         }
         self.assertTrue(_message_matches(mail, config, date(2026, 7, 12)))
+
+    def test_mail_provider_defaults_for_supported_domains(self) -> None:
+        cases = {
+            "user@qq.com": ("imap.qq.com", "smtp.qq.com", 465, False),
+            "user@foxmail.com": ("imap.qq.com", "smtp.qq.com", 465, False),
+            "user@163.com": ("imap.163.com", "smtp.163.com", 465, False),
+            "user@126.com": ("imap.126.com", "smtp.126.com", 465, False),
+            "user@gmail.com": ("imap.gmail.com", "smtp.gmail.com", 465, False),
+            "user@outlook.com": ("outlook.office365.com", "smtp-mail.outlook.com", 587, True),
+        }
+        for account, expected in cases.items():
+            with self.subTest(account=account):
+                mail_cfg = {"email_account": account, "imap_server": "old", "smtp_server": "old"}
+                apply_mail_provider_defaults(mail_cfg)
+                self.assertEqual(mail_cfg["imap_server"], expected[0])
+                self.assertEqual(mail_cfg["smtp_server"], expected[1])
+                self.assertEqual(mail_cfg["smtp_port"], expected[2])
+                self.assertEqual(mail_cfg["smtp_starttls"], expected[3])
+                self.assertIsNotNone(provider_for_account(account))
+
+    def test_config_example_keeps_mail_credentials_blank(self) -> None:
+        text = Path("config/config.example.yaml").read_text(encoding="utf-8")
+        self.assertIn('email_account: ""', text)
+        self.assertIn('email_auth_code: ""', text)
+        self.assertIn('type: "auto"', text)
+        self.assertNotIn("15274958341", text)
+        self.assertNotIn("secret-auth-code", text)
 
     def test_late_historical_mail_requires_explicit_stat_date(self) -> None:
         config = {

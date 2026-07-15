@@ -18,6 +18,7 @@ from src.config_loader import load_config
 from src.config_writer import save_config
 from src.licensing import LicenseCheckPoint, LicenseRequirement, export_license_change_request, export_license_request, get_license_status, get_machine_fingerprint, import_and_validate_license, require_valid_license
 from src.licensing.errors import MachineFingerprintError
+from src.mail_provider import apply_mail_provider_defaults, supported_provider_text
 
 
 BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -90,8 +91,8 @@ class MonitorApp(tk.Tk):
         filters = self.config_data["filter"]
         self.email_account = tk.StringVar(value=mail.get("email_account", ""))
         self.email_auth_code = tk.StringVar(value=mail.get("email_auth_code", ""))
-        self.imap_server = tk.StringVar(value=mail.get("imap_server", "imap.163.com"))
-        self.smtp_server = tk.StringVar(value=mail.get("smtp_server", "smtp.163.com"))
+        self.imap_server = tk.StringVar(value=mail.get("imap_server", ""))
+        self.smtp_server = tk.StringVar(value=mail.get("smtp_server", ""))
         self.receivers = tk.StringVar(value=", ".join(report.get("report_receivers", [])))
         self.cc = tk.StringVar(value=", ".join(report.get("report_cc", [])))
         self.send_email = tk.BooleanVar(value=bool(report.get("send_email", True)))
@@ -194,9 +195,9 @@ class MonitorApp(tk.Tk):
 
     def _mail_page(self, parent: tk.Frame) -> tk.Frame:
         page = self._page_frame(parent)
-        self._section_header(page, 0, "\uE715", "邮箱连接", "配置 163 邮箱连接信息")
-        self._form_row(page, 1, "163 邮箱账号", self.email_account, "请输入 163 邮箱账号")
-        self._form_row(page, 2, "客户端授权码", self.email_auth_code, "请输入客户端授权码（不是登录密码）", show="*")
+        self._section_header(page, 0, "\uE715", "邮箱连接", "配置邮箱连接信息")
+        self._form_row(page, 1, "邮箱账号", self.email_account, "请输入邮箱账号，如 example@qq.com")
+        self._form_row(page, 2, "客户端授权码", self.email_auth_code, "请输入客户端授权码/应用专用密码（不是登录密码）", show="*")
         self._form_row(page, 3, "IMAP 服务器", self.imap_server)
         self._form_row(page, 4, "SMTP 服务器", self.smtp_server)
 
@@ -204,7 +205,7 @@ class MonitorApp(tk.Tk):
         self._form_row(page, 7, "日报接收人", self.receivers, "请输入日报接收人（多个邮箱请用英文逗号分隔）")
         self._form_row(page, 8, "抄送", self.cc, "请输入抄送人（多个邮箱请用英文逗号分隔）")
         self._check_row(page, 9, self.send_email, "运行完成后发送日报邮件")
-        self._info_bar(page, 10, "多个邮箱请用英文逗号分隔。163 邮箱请填写客户端授权码，不是登录密码。")
+        self._info_bar(page, 10, f"多个邮箱请用英文逗号分隔。支持自动识别：{supported_provider_text()}。请填写客户端授权码/应用专用密码，不是网页登录密码。")
         return page
 
     def _rules_page(self, parent: tk.Frame) -> tk.Frame:
@@ -432,7 +433,11 @@ class MonitorApp(tk.Tk):
         int(self.file_size_warning_kb.get())
         int(self.continuous_missing_days.get())
         date.fromisoformat(self.stat_date.get())
-        self.config_data["mail"].update(email_account=self.email_account.get().strip(), email_auth_code=self.email_auth_code.get().strip(), imap_server=self.imap_server.get().strip(), smtp_server=self.smtp_server.get().strip(), imap_port=993, smtp_port=465, use_ssl=True, type="163_personal")
+        mail_cfg = self.config_data["mail"]
+        mail_cfg.update(email_account=self.email_account.get().strip(), email_auth_code=self.email_auth_code.get().strip(), imap_server=self.imap_server.get().strip(), smtp_server=self.smtp_server.get().strip(), imap_port=993, smtp_port=465, use_ssl=True, smtp_starttls=False, type="auto")
+        apply_mail_provider_defaults(mail_cfg)
+        self.imap_server.set(mail_cfg.get("imap_server", ""))
+        self.smtp_server.set(mail_cfg.get("smtp_server", ""))
         self.config_data["report"].update(report_receivers=_split_csv(self.receivers.get()), report_cc=_split_csv(self.cc.get()), send_email=bool(self.send_email.get()), generate_excel=True, generate_html=True, send_time="09:00", statistic_period="previous_day_00_to_24")
         self.config_data["rules"].update(file_size_warning_kb=int(self.file_size_warning_kb.get()), continuous_missing_warning_days=int(self.continuous_missing_days.get()))
         self.config_data["filter"].update(allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)), subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)), attachment_extensions=[".rld", ".zip", ".txt", ".csv", ".xls", ".xlsx", ".rar"])

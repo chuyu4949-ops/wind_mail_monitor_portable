@@ -7,10 +7,11 @@ from logging import Logger
 from pathlib import Path
 
 from .licensing.license_watermark import watermark_text
+from .mail_provider import apply_mail_provider_defaults, supported_provider_text
 
 
 def send_report_email(config: dict, stat_date: date, html_path: Path, xlsx_path: Path, logger: Logger, license_payload: dict | None = None) -> None:
-    mail_cfg = config["mail"]
+    mail_cfg = apply_mail_provider_defaults(config["mail"])
     receivers = _as_list(config["report"].get("report_receivers", []))
     cc = _as_list(config["report"].get("report_cc", []))
     if not receivers:
@@ -37,7 +38,7 @@ def send_report_email(config: dict, stat_date: date, html_path: Path, xlsx_path:
 
     recipients = receivers + cc
     try:
-        with smtplib.SMTP_SSL(mail_cfg["smtp_server"], int(mail_cfg["smtp_port"])) as client:
+        with _smtp_client(mail_cfg) as client:
             try:
                 client.login(mail_cfg["email_account"], mail_cfg["email_auth_code"])
             except smtplib.SMTPAuthenticationError as exc:
@@ -60,6 +61,18 @@ def _as_list(value: object) -> list[str]:
     return [item.strip() for item in text.split(",") if item.strip()]
 
 
+def _smtp_client(mail_cfg: dict):
+    host = mail_cfg["smtp_server"]
+    port = int(mail_cfg["smtp_port"])
+    if mail_cfg.get("smtp_starttls"):
+        client = smtplib.SMTP(host, port, timeout=60)
+        client.ehlo()
+        client.starttls()
+        client.ehlo()
+        return client
+    return smtplib.SMTP_SSL(host, port, timeout=60)
+
+
 def _smtp_login_error_message(exc: smtplib.SMTPAuthenticationError) -> str:
     detail = exc.smtp_error
     if isinstance(detail, bytes):
@@ -68,6 +81,6 @@ def _smtp_login_error_message(exc: smtplib.SMTPAuthenticationError) -> str:
         detail_text = str(detail)
     return (
         "日报邮件发送失败：SMTP 登录未通过邮箱验证。\n"
-        "请确认邮箱账号、客户端授权码、SMTP 服务开关是否正确。\n"
+        f"请确认邮箱账号、客户端授权码/应用专用密码、SMTP 服务开关是否正确。当前支持自动识别：{supported_provider_text()}。\n"
         f"服务器返回：{exc.smtp_code} {detail_text}"
     )

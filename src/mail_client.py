@@ -9,6 +9,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 from logging import Logger
 
 from .mast_parser import filename_starts_with_six_digits, parse_attachment, payload_has_stat_date
+from .mail_provider import apply_mail_provider_defaults, supported_provider_text
 from .models import MailMessage
 
 
@@ -21,11 +22,11 @@ IMAP_ID = {
 
 
 def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
-    mail_cfg = config["mail"]
+    mail_cfg = apply_mail_provider_defaults(config["mail"])
     account = mail_cfg.get("email_account", "").strip()
     auth_code = mail_cfg.get("email_auth_code", "").strip()
     if not account or not auth_code or account.startswith("请") or auth_code.startswith("请"):
-        raise RuntimeError("请先在软件界面填写 163 邮箱账号和客户端授权码。注意：客户端授权码不是网页登录密码。")
+        raise RuntimeError("请先在软件界面填写邮箱账号和客户端授权码/应用专用密码。注意：这通常不是网页登录密码。")
 
     for attempt in range(1, 4):
         try:
@@ -44,7 +45,7 @@ def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMe
 
 
 def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
-    mail_cfg = config["mail"]
+    mail_cfg = apply_mail_provider_defaults(config["mail"])
     client = imaplib.IMAP4_SSL(mail_cfg["imap_server"], int(mail_cfg["imap_port"]))
     try:
         try:
@@ -123,8 +124,8 @@ def _select_inbox(client: imaplib.IMAP4_SSL) -> None:
     status, boxes = client.list()
     box_hint = _decode_imap_response(boxes) if status == "OK" else "无法读取邮箱文件夹列表"
     raise RuntimeError(
-        "邮箱登录成功，但无法进入收件箱。请确认 163 邮箱已开启 IMAP/SMTP 服务，"
-        f"并使用客户端授权码。服务器返回：{'; '.join(errors)}。邮箱文件夹：{box_hint}"
+        "邮箱登录成功，但无法进入收件箱。请确认当前邮箱已开启 IMAP/SMTP 服务，"
+        f"并使用客户端授权码或应用专用密码。服务器返回：{'; '.join(errors)}。邮箱文件夹：{box_hint}"
     )
 
 
@@ -226,12 +227,12 @@ def _decode_imap_response(data: object) -> str:
 def _login_error_message(exc: BaseException) -> str:
     detail = _decode_imap_response(exc.args)
     return (
-        "邮箱登录失败：账号或客户端授权码未通过 163 邮箱验证。\n"
+        "邮箱登录失败：账号或客户端授权码/应用专用密码未通过邮箱验证。\n"
         "请检查：\n"
-        "1. 邮箱账号是否填写完整，例如 xxx@163.com；\n"
-        "2. 客户端授权码是否为 163 网页邮箱生成的授权码，不是网页登录密码；\n"
-        "3. 网页邮箱“设置/POP3/SMTP/IMAP”中是否已开启 IMAP/SMTP 服务；\n"
-        "4. 如果刚修改过密码或安全设置，请重新生成客户端授权码并保存设置。\n"
+        f"1. 邮箱账号是否填写完整，当前支持自动识别：{supported_provider_text()}；\n"
+        "2. 客户端授权码或应用专用密码是否正确，通常不是网页登录密码；\n"
+        "3. 网页邮箱设置中是否已开启 IMAP/SMTP 服务；\n"
+        "4. 如果刚修改过密码或安全设置，请重新生成授权码/应用专用密码并保存设置。\n"
         f"服务器返回：{detail}"
     )
 
