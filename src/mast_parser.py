@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 import zipfile
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 
 RLD_PATTERN = re.compile(r"^(?P<code>\d{5,6})_(?P<data_date>\d{4}-\d{2}-\d{2})_00\.00_(?P<seq>\d+)\.rld$", re.I)
+SWIFT_PATTERN = re.compile(r"^(?P<code>\d{5})(?P<data_date>20\d{6})m\d+\.swift$", re.I)
+RWD_DAT_PATTERN = re.compile(r"^(?P<code>\d{4})(?P<data_date>20\d{6})\d*\.(?:rwd|dat)$", re.I)
 MOLAS_ZIP_PATTERN = re.compile(r"^Molas B300-(?P<code>\d+)-(?P<attachment_date>\d{8})-(?P<batch>\d+)\.zip$", re.I)
 MOLAS_INNER_PATTERN = re.compile(r"^Molas B300-(?P<code>\d+)WindSpeedAverage(?P<data_date>\d{8})\.txt$", re.I)
+SUPPORTED_WIND_EXTENSIONS = {".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"}
 
 
 def normalize_code(raw_code: str) -> str:
@@ -18,6 +22,20 @@ def normalize_code(raw_code: str) -> str:
 def filename_starts_with_six_digits(filename: str) -> bool:
     name = Path(filename).name
     return len(name) >= 6 and name[:6].isdigit()
+
+
+def is_supported_wind_filename(filename: str) -> bool:
+    name = Path(filename).name
+    if Path(name).suffix.lower() not in SUPPORTED_WIND_EXTENSIONS:
+        return False
+    return bool(
+        RLD_PATTERN.match(name)
+        or SWIFT_PATTERN.match(name)
+        or RWD_DAT_PATTERN.match(name)
+        or MOLAS_ZIP_PATTERN.match(name)
+        or MOLAS_INNER_PATTERN.match(name)
+        or filename_starts_with_six_digits(name)
+    )
 
 
 def parse_attachment(
@@ -47,6 +65,28 @@ def parse_attachment(
         result["display_name"] = f"{result['normalized_mast_id']}#\u6d4b\u98ce\u5854"
         return result
 
+    swift_match = SWIFT_PATTERN.match(name)
+    if swift_match:
+        raw = swift_match.group("code")
+        result.update(
+            raw_device_code=raw,
+            normalized_mast_id=normalize_code(raw),
+            data_date=_format_yyyymmdd(swift_match.group("data_date")),
+        )
+        result["display_name"] = f"{result['normalized_mast_id']}#\u6d4b\u98ce\u5854"
+        return result
+
+    rwd_dat_match = RWD_DAT_PATTERN.match(name)
+    if rwd_dat_match:
+        raw = rwd_dat_match.group("code")
+        result.update(
+            raw_device_code=raw,
+            normalized_mast_id=normalize_code(raw),
+            data_date=_format_yyyymmdd(rwd_dat_match.group("data_date")),
+        )
+        result["display_name"] = f"{result['normalized_mast_id']}#\u6d4b\u98ce\u5854"
+        return result
+
     zip_match = MOLAS_ZIP_PATTERN.match(name)
     if zip_match:
         raw = zip_match.group("code")
@@ -57,6 +97,17 @@ def parse_attachment(
         )
         if file_path and file_path.exists():
             result["data_date"] = _read_molas_zip_data_date(file_path) or ""
+        result["display_name"] = f"{result['normalized_mast_id']}#\u6d4b\u98ce\u96f7\u8fbe"
+        return result
+
+    molas_text_match = MOLAS_INNER_PATTERN.match(name)
+    if molas_text_match:
+        raw = molas_text_match.group("code")
+        result.update(
+            raw_device_code=raw,
+            normalized_mast_id=normalize_code(raw),
+            data_date=_format_yyyymmdd(molas_text_match.group("data_date")),
+        )
         result["display_name"] = f"{result['normalized_mast_id']}#\u6d4b\u98ce\u96f7\u8fbe"
         return result
 
@@ -84,10 +135,30 @@ def parse_attachment(
 
 
 def payload_has_stat_date(content: bytes, stat_date: date) -> bool:
+    if _zip_payload_has_stat_date(content, stat_date):
+        return True
     text = _decode_content_sample(content)
     if not text:
         return False
     return stat_date.isoformat() in _dates_from_text(text, stat_date.year)
+
+
+def _zip_payload_has_stat_date(content: bytes, stat_date: date) -> bool:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            expected = stat_date.isoformat()
+            for info in archive.infolist():
+                name = Path(info.filename).name
+                parsed = parse_attachment(name, default_year=stat_date.year)
+                if parsed.get("data_date") == expected or parsed.get("attachment_date") == expected:
+                    return True
+                if info.file_size <= 512 * 1024 and not info.is_dir():
+                    text = _decode_content_sample(archive.read(info))
+                    if expected in _dates_from_text(text, stat_date.year):
+                        return True
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        return False
+    return False
 
 
 def _code_from_subject(subject: str) -> str:

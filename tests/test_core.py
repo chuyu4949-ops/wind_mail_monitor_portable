@@ -25,10 +25,10 @@ from src.licensing.license_validator import validate_signed_license
 from src.licensing.license_watermark import watermark_text
 from src.licensing.machine_fingerprint import MachineFingerprint, _normalize, _short_machine_code
 from src.licensing.time_guard import check_and_update_time_state
-from src.mail_client import _fetch_once, _message_matches, _search_before_date
+from src.mail_client import _fetch_once, _imap_date, _mailboxes_to_scan, _message_matches, _search_before_date
 from src.mail_provider import apply_mail_provider_defaults, provider_for_account
-from src.mast_parser import parse_attachment
-from src.models import DailyStatusRow, MailMessage
+from src.mast_parser import is_supported_wind_filename, parse_attachment, payload_has_stat_date
+from src.models import AttachmentRecord, DailyStatusRow, MailMessage
 from src.report_generator import generate_html_report, generate_xlsx_report
 from src.rules import calculate_daily_status
 
@@ -93,6 +93,34 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(molas["raw_device_code"], "3243")
         self.assertEqual(molas["attachment_date"], "2026-07-07")
 
+    def test_parse_supported_sample_filename_formats(self) -> None:
+        cases = {
+            "009357_2024-12-20_00.00_000628.rld": ("9357", "2024-12-20"),
+            "0908820260716m10.swift": ("9088", "2026-07-16"),
+            "745420170402213.RWD": ("7454", "2017-04-02"),
+            "8002202607100328.dat": ("8002", "2026-07-10"),
+            "Molas B300-3243WindSpeedAverage20250719.txt": ("3243", "2025-07-19"),
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                parsed = parse_attachment(filename)
+                self.assertEqual(parsed["normalized_mast_id"], expected[0])
+                self.assertEqual(parsed["data_date"], expected[1])
+                self.assertTrue(is_supported_wind_filename(filename))
+
+        zip_name = "Molas B300-3242-20260717-2.zip"
+        parsed_zip = parse_attachment(zip_name)
+        self.assertEqual(parsed_zip["normalized_mast_id"], "3242")
+        self.assertEqual(parsed_zip["attachment_date"], "2026-07-17")
+        self.assertTrue(is_supported_wind_filename(zip_name))
+
+    def test_zip_payload_uses_inner_molas_data_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "sample.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("Molas B300-3243WindSpeedAverage20260716.txt", "2026-07-16 00:00")
+            self.assertTrue(payload_has_stat_date(archive_path.read_bytes(), date(2026, 7, 16)))
+
     def test_parse_subject_prefers_mast_id_over_height(self) -> None:
         parsed = parse_attachment("data.rar", subject="hu nan yi yang yuan jiang 160m 6690")
         self.assertEqual(parsed["normalized_mast_id"], "6690")
@@ -140,6 +168,24 @@ class CoreTests(unittest.TestCase):
             }
         }
         self.assertTrue(_message_matches(mail, config))
+
+    def test_sent_folder_mail_bypasses_inbox_sender_filter(self) -> None:
+        mail = MailMessage(
+            email_uid="Sent Messages:1",
+            subject="ordinary subject",
+            sender_name="",
+            sender_email="monitor@qq.com",
+            received_time=datetime(2026, 7, 16, 8, 0, 0),
+            attachments=[("0908820260716m10.swift", b"data")],
+            source_folder="Sent Messages",
+        )
+        config = {
+            "filter": {
+                "allowed_senders": ["source@example.com"],
+                "subject_keywords": ["unrelated keyword"],
+            }
+        }
+        self.assertTrue(_message_matches(mail, config, date(2026, 7, 16)))
 
     def test_placeholder_filter_examples_do_not_block_mail(self) -> None:
         mail = MailMessage(
@@ -191,6 +237,13 @@ class CoreTests(unittest.TestCase):
         client.login.return_value = ("OK", [])
         client.select.return_value = ("OK", [b"1"])
         client.search.return_value = ("OK", [b""])
+        client.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren) "/" "Sent Messages"',
+            ],
+        )
         client._simple_command.return_value = ("OK", [])
         client.logout.return_value = ("BYE", [])
         config = {
@@ -201,10 +254,31 @@ class CoreTests(unittest.TestCase):
             "filter": {"allowed_senders": [], "subject_keywords": [], "attachment_extensions": []},
         }
 
-        _fetch_once(config, date(2026, 7, 14), MagicMock())
+        run_date = date.today() - timedelta(days=1)
+        _fetch_once(config, run_date, MagicMock())
 
-        client.search.assert_called_once_with(None, "SINCE", "14-Jul-2026", "BEFORE", "16-Jul-2026")
+        self.assertEqual(client.search.call_count, 2)
+        client.search.assert_any_call(
+            None,
+            "SINCE",
+            _imap_date(run_date),
+            "BEFORE",
+            _imap_date(run_date + timedelta(days=2)),
+        )
+        client.select.assert_any_call("INBOX", readonly=True)
+        client.select.assert_any_call("Sent Messages", readonly=True)
         imap_ssl.assert_called_once_with("imap.qq.com", 993, timeout=60)
+
+    def test_sent_mailbox_discovery_uses_flag_and_common_names(self) -> None:
+        client = MagicMock()
+        client.list.return_value = (
+            "OK",
+            [
+                b'(\\HasNoChildren) "/" "INBOX"',
+                b'(\\HasNoChildren \\Sent) "/" "Sent Items"',
+            ],
+        )
+        self.assertEqual(_mailboxes_to_scan(client, MagicMock()), ["INBOX", "Sent Items"])
 
     def test_late_historical_mail_requires_explicit_stat_date(self) -> None:
         config = {
@@ -443,6 +517,58 @@ class CoreTests(unittest.TestCase):
 
             self.assertEqual(first[0].attachment.file_path, second[0].attachment.file_path)
             self.assertEqual(len(list((base / "data" / "2026-07-11" / "10").glob("*.rld"))), 1)
+
+    def test_size_warning_uses_fixed_threshold_and_historical_average(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "test.db")
+            db.initialize()
+
+            def attachment(uid: str, stat: str, size_kb: float, filename: str) -> AttachmentRecord:
+                return AttachmentRecord(
+                    uid,
+                    "wind data",
+                    "source@example.com",
+                    "009357",
+                    "9357",
+                    "9357#测风塔",
+                    filename,
+                    str(Path(tmp) / stat / filename),
+                    ".rld",
+                    int(size_kb * 1024),
+                    size_kb,
+                    stat,
+                    "",
+                    stat,
+                    "正常" if size_kb >= 20 else "文件小于 20 KB",
+                )
+
+            db.upsert_attachment_records(
+                [
+                    attachment("h1", "2026-07-14", 100, "009357_2026-07-14_00.00_1.rld"),
+                    attachment("h2", "2026-07-15", 120, "009357_2026-07-15_00.00_1.rld"),
+                    attachment("bad-history", "2026-07-15", 10, "009357_2026-07-15_00.00_2.rld"),
+                    attachment("today", "2026-07-16", 80, "009357_2026-07-16_00.00_1.rld"),
+                ]
+            )
+
+            result = calculate_daily_status(
+                db,
+                {
+                    "rules": {
+                        "file_size_warning_kb": 20,
+                        "historical_size_warning_ratio": 0.8,
+                        "continuous_missing_warning_days": 2,
+                    }
+                },
+                date(2026, 7, 16),
+                SilentLogger(),
+            )
+
+            self.assertEqual(len(result.size_warning_rows), 1)
+            warning = result.size_warning_rows[0]
+            self.assertEqual(warning["historical_average_size_kb"], 110.0)
+            self.assertEqual(warning["historical_size_threshold_kb"], 88.0)
+            self.assertIn("80%", warning["size_status"])
 
     def test_generate_xlsx_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import email
 import imaplib
+import re
 import time
 from datetime import date, datetime, timedelta
 from email.header import decode_header
 from email.utils import getaddresses, parsedate_to_datetime
 from logging import Logger
 
-from .mast_parser import filename_starts_with_six_digits, parse_attachment, payload_has_stat_date
+from .mast_parser import is_supported_wind_filename, parse_attachment, payload_has_stat_date
 from .mail_provider import apply_mail_provider_defaults, supported_provider_text
 from .models import MailMessage
 
@@ -21,6 +22,15 @@ IMAP_ID = {
 }
 
 IMAP_TIMEOUT_SECONDS = 60
+SENT_MAILBOX_NAMES = {
+    "sent",
+    "sent items",
+    "sent messages",
+    "sent mail",
+    "sentmail",
+    "已发送",
+    "已发送邮件",
+}
 
 
 def fetch_messages(config: dict, stat_date: date, logger: Logger) -> list[MailMessage]:
@@ -61,34 +71,12 @@ def _fetch_once(config: dict, stat_date: date, logger: Logger) -> list[MailMessa
 
         logger.info("邮箱登录成功")
         _send_imap_id(client, logger)
-        _select_inbox(client)
-
-        since = _imap_date(stat_date)
-        search_before = _imap_date(_search_before_date(stat_date))
-        # QQ Mail accepts date criteria as separate IMAP arguments. Passing the
-        # whole expression as one parenthesized argument can silently match the
-        # entire inbox, causing very large mailboxes to appear frozen.
-        status, data = client.search(None, "SINCE", since, "BEFORE", search_before)
-        if status != "OK":
-            detail = _decode_imap_response(data)
-            raise RuntimeError(f"IMAP 搜索失败：{detail}")
-
-        message_ids = data[0].split() if data and data[0] else []
-        logger.info("日期范围内候选邮件：%s 封", len(message_ids))
-
         messages: list[MailMessage] = []
-        for index, uid in enumerate(message_ids, start=1):
-            fetch_status, fetch_data = client.fetch(uid, "(RFC822)")
-            if fetch_status != "OK" or not fetch_data:
-                continue
-            msg = email.message_from_bytes(fetch_data[0][1])
-            mail = _to_mail_message(uid.decode("ascii", errors="ignore"), msg, config)
-            if _message_matches(mail, config, stat_date):
-                messages.append(mail)
-            if index % 50 == 0 or index == len(message_ids):
-                logger.info("邮件读取进度：%s/%s", index, len(message_ids))
+        mailboxes = _mailboxes_to_scan(client, logger)
+        for mailbox in mailboxes:
+            messages.extend(_fetch_mailbox(client, mailbox, config, stat_date, logger))
 
-        logger.info("搜索到候选邮件 %s 封", len(messages))
+        logger.info("收件箱和已发送文件夹共识别候选邮件 %s 封", len(messages))
         return messages
     finally:
         try:
@@ -122,28 +110,75 @@ def _escape_imap_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _select_inbox(client: imaplib.IMAP4_SSL) -> None:
-    attempts = [
-        lambda: client.select("INBOX"),
-        lambda: client.select("INBOX", readonly=True),
-        lambda: client.select(),
-    ]
-    errors: list[str] = []
-    for attempt in attempts:
-        status, data = attempt()
-        if status == "OK":
-            return
-        errors.append(_decode_imap_response(data))
-
+def _mailboxes_to_scan(client: imaplib.IMAP4_SSL, logger: Logger) -> list[str]:
+    mailboxes = ["INBOX"]
     status, boxes = client.list()
-    box_hint = _decode_imap_response(boxes) if status == "OK" else "无法读取邮箱文件夹列表"
-    raise RuntimeError(
-        "邮箱登录成功，但无法进入收件箱。请确认当前邮箱已开启 IMAP/SMTP 服务，"
-        f"并使用客户端授权码或应用专用密码。服务器返回：{'; '.join(errors)}。邮箱文件夹：{box_hint}"
-    )
+    if status == "OK":
+        for raw_box in boxes or []:
+            flags, mailbox = _parse_list_mailbox(raw_box)
+            if mailbox and ("\\sent" in flags.lower() or mailbox.lower() in SENT_MAILBOX_NAMES):
+                if mailbox.lower() != "inbox" and mailbox not in mailboxes:
+                    mailboxes.append(mailbox)
+    if len(mailboxes) == 1:
+        logger.warning("未发现已发送文件夹，本次仅扫描收件箱")
+    else:
+        logger.info("将扫描邮箱文件夹：%s", "、".join(mailboxes))
+    return mailboxes
 
 
-def _to_mail_message(uid: str, msg: email.message.Message, config: dict) -> MailMessage:
+def _parse_list_mailbox(raw_box: object) -> tuple[str, str]:
+    text = _decode_imap_response(raw_box).strip()
+    match = re.match(r'^\((?P<flags>[^)]*)\)\s+(?:NIL|"(?:\\.|[^"])*")\s+(?P<name>.+)$', text)
+    if not match:
+        return "", ""
+    name = match.group("name").strip()
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1].replace(r'\"', '"').replace(r"\\", "\\")
+    return match.group("flags"), name
+
+
+def _fetch_mailbox(
+    client: imaplib.IMAP4_SSL,
+    mailbox: str,
+    config: dict,
+    stat_date: date,
+    logger: Logger,
+) -> list[MailMessage]:
+    status, select_data = client.select(mailbox, readonly=True)
+    if status != "OK":
+        detail = _decode_imap_response(select_data)
+        if mailbox.upper() == "INBOX":
+            raise RuntimeError(f"无法进入收件箱：{detail}")
+        logger.warning("无法进入已发送文件夹 %s：%s", mailbox, detail)
+        return []
+
+    since = _imap_date(stat_date)
+    search_before = _imap_date(_search_before_date(stat_date))
+    # QQ Mail accepts date criteria only when they are separate IMAP arguments.
+    status, data = client.search(None, "SINCE", since, "BEFORE", search_before)
+    if status != "OK":
+        detail = _decode_imap_response(data)
+        raise RuntimeError(f"IMAP 搜索失败（{mailbox}）：{detail}")
+
+    message_ids = data[0].split() if data and data[0] else []
+    logger.info("%s 日期范围内候选邮件：%s 封", mailbox, len(message_ids))
+
+    messages: list[MailMessage] = []
+    for index, uid in enumerate(message_ids, start=1):
+        fetch_status, fetch_data = client.fetch(uid, "(BODY.PEEK[])")
+        if fetch_status != "OK" or not fetch_data or not isinstance(fetch_data[0], tuple):
+            continue
+        msg = email.message_from_bytes(fetch_data[0][1])
+        uid_text = uid.decode("ascii", errors="ignore")
+        mail = _to_mail_message(f"{mailbox}:{uid_text}", msg, config, mailbox)
+        if _message_matches(mail, config, stat_date):
+            messages.append(mail)
+        if index % 50 == 0 or index == len(message_ids):
+            logger.info("%s 邮件读取进度：%s/%s", mailbox, index, len(message_ids))
+    return messages
+
+
+def _to_mail_message(uid: str, msg: email.message.Message, config: dict, source_folder: str = "INBOX") -> MailMessage:
     subject = _decode_value(msg.get("Subject", ""))
     sender_name, sender_email = _parse_sender(msg.get("From", ""))
     received_header = msg.get("Date")
@@ -163,15 +198,16 @@ def _to_mail_message(uid: str, msg: email.message.Message, config: dict) -> Mail
         payload = part.get_payload(decode=True) or b""
         attachments.append((filename, payload))
 
-    return MailMessage(uid, subject, sender_name, sender_email, received, attachments)
+    return MailMessage(uid, subject, sender_name, sender_email, received, attachments, source_folder)
 
 
 def _message_matches(mail: MailMessage, config: dict, stat_date: date | None = None) -> bool:
     allowed_senders = _active_allowed_senders(config["filter"].get("allowed_senders", []))
     keywords = _active_subject_keywords(config["filter"].get("subject_keywords", []))
-    sender_ok = not allowed_senders or mail.sender_email.lower() in allowed_senders
+    from_sent_folder = mail.source_folder.upper() != "INBOX"
+    sender_ok = from_sent_folder or not allowed_senders or mail.sender_email.lower() in allowed_senders
     keyword_ok = not keywords or any(keyword.lower() in mail.subject.lower() for keyword in keywords)
-    attachment_name_ok = any(filename_starts_with_six_digits(filename) for filename, _ in mail.attachments)
+    attachment_name_ok = any(is_supported_wind_filename(filename) for filename, _ in mail.attachments)
     if not (bool(mail.attachments) and sender_ok and (keyword_ok or attachment_name_ok)):
         return False
     if stat_date is None:

@@ -209,7 +209,7 @@ class MonitorApp(tk.Tk):
 
     def _rules_page(self, parent: tk.Frame) -> tk.Frame:
         page = self._page_frame(parent)
-        self._section_header(page, 0, "\uE9D2", "规则参数", "配置文件检查与缺失提醒规则")
+        self._section_header(page, 0, "\uE9D2", "规则参数", "固定小文件阈值，并检查是否低于历史平均大小的 80%")
         grid = tk.Frame(page, bg=SURFACE)
         grid.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 10))
         grid.columnconfigure(0, weight=1)
@@ -439,7 +439,7 @@ class MonitorApp(tk.Tk):
         self.smtp_server.set(mail_cfg.get("smtp_server", ""))
         self.config_data["report"].update(report_receivers=_split_csv(self.receivers.get()), report_cc=_split_csv(self.cc.get()), send_email=bool(self.send_email.get()), generate_excel=True, generate_html=True, send_time="09:00", statistic_period="previous_day_00_to_24")
         self.config_data["rules"].update(file_size_warning_kb=int(self.file_size_warning_kb.get()), continuous_missing_warning_days=int(self.continuous_missing_days.get()))
-        self.config_data["filter"].update(allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)), subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)), attachment_extensions=[".rld", ".zip", ".txt", ".csv", ".xls", ".xlsx", ".rar"])
+        self.config_data["filter"].update(allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)), subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)), attachment_extensions=[".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"])
         self.config_data["storage"].update(data_dir=self.data_dir.get().strip() or "./data", report_dir=self.report_dir.get().strip() or "./reports", log_dir="./logs", database_path="./database/wind_mail_monitor.db")
 
     def run_monitor(self) -> None:

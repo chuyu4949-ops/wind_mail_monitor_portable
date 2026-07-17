@@ -87,8 +87,9 @@ def _apply_defaults(config: dict[str, Any]) -> None:
     config["mail"].setdefault("type", "auto")
     config["filter"].setdefault("allowed_senders", [])
     config["filter"].setdefault("subject_keywords", [])
-    config["filter"].setdefault("attachment_extensions", [".rld", ".zip"])
+    config["filter"]["attachment_extensions"] = [".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"]
     config["rules"].setdefault("file_size_warning_kb", 20)
+    config["rules"].setdefault("historical_size_warning_ratio", 0.8)
     config["report"]["report_receivers"] = _as_list(config["report"].get("report_receivers", []))
     config["report"]["report_cc"] = _as_list(config["report"].get("report_cc", []))
     config["report"].setdefault("send_email", True)

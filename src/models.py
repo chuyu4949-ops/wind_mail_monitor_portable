@@ -12,6 +12,7 @@ class MailMessage:
     sender_email: str
     received_time: datetime
     attachments: list[tuple[str, bytes]]
+    source_folder: str = "INBOX"
 
 
 @dataclass(frozen=True)

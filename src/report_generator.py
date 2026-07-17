@@ -34,7 +34,7 @@ def generate_html_report(report_dir: Path, stat_date: date, result: DailyResult,
 <h3>二、今日收到测风塔</h3><p>{html.escape(received_names)}</p>
 <h3>三、今日缺失提醒</h3>{_html_table(result.missing_rows, ["display_name", "continuous_missing_days", "missing_status"])}
 <h3>四、连续缺失提醒</h3>{_html_table(result.continuous_missing_rows, ["display_name", "continuous_missing_days", "missing_status"])}
-<h3>五、文件大小异常</h3>{_html_table(result.size_warning_rows, ["display_name", "filename", "file_size_kb", "size_status"])}
+<h3>五、文件大小异常</h3>{_html_table(result.size_warning_rows, ["display_name", "filename", "file_size_kb", "historical_average_size_kb", "size_status"])}
 <h3>六、未识别附件</h3>{_html_table(result.unknown_rows, ["subject", "filename", "file_size_kb"])}
 <h3>七、处理建议</h3>
 <ol><li>联系缺失测风塔对应的数据发送单位核查是否漏发。</li><li>对连续缺失 2 天及以上的测风塔建立补发跟踪。</li><li>对小于 20 KB 的附件进行人工复核。</li></ol>
@@ -55,8 +55,8 @@ def generate_xlsx_report(report_dir: Path, stat_date: date, result: DailyResult,
         ("今日接收清单", _rows(result.received_rows, ["normalized_mast_id", "display_name", "attachment_count", "min_file_size_kb"])),
         ("缺失提醒", _rows(result.missing_rows, ["normalized_mast_id", "display_name", "continuous_missing_days", "missing_status"])),
         ("连续缺失提醒", _rows(result.continuous_missing_rows, ["normalized_mast_id", "display_name", "continuous_missing_days", "missing_status"])),
-        ("文件大小异常", _rows(result.size_warning_rows, ["display_name", "filename", "file_size_kb", "size_status"])),
-        ("邮件附件明细", _rows(result.attachment_rows, ["email_received_date", "display_name", "filename", "file_size_kb", "size_status", "subject", "sender_email", "file_path"])),
+        ("文件大小异常", _rows(result.size_warning_rows, ["display_name", "filename", "file_size_kb", "historical_average_size_kb", "size_status"])),
+        ("邮件附件明细", _rows(result.attachment_rows, ["email_received_date", "display_name", "filename", "file_size_kb", "historical_average_size_kb", "size_status", "subject", "sender_email", "file_path"])),
         ("未识别附件", _rows(result.unknown_rows, ["email_received_date", "subject", "filename", "file_size_kb", "file_path"])),
     ]
     _write_xlsx(path, sheets)

@@ -188,6 +188,32 @@ class Database:
         finally:
             conn.close()
 
+    def historical_average_sizes_before_date(self, stat_date: str, minimum_size_kb: float) -> dict[str, float]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """
+                select normalized_mast_id, avg(file_size_kb) as average_size_kb
+                from attachment_records
+                where coalesce(normalized_mast_id, '') <> ''
+                  and file_size_kb >= ?
+                  and coalesce(
+                        nullif(data_date, ''),
+                        nullif(attachment_date, ''),
+                        email_received_date
+                      ) < ?
+                group by normalized_mast_id
+                """,
+                (minimum_size_kb, stat_date),
+            ).fetchall()
+            return {
+                str(row["normalized_mast_id"]): float(row["average_size_kb"])
+                for row in rows
+                if row["average_size_kb"] is not None
+            }
+        finally:
+            conn.close()
+
     def upsert_daily_status(self, rows: Iterable[DailyStatusRow]) -> None:
         conn = self.connect()
         try:

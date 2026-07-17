@@ -17,15 +17,15 @@ filter:
     - "邮箱主题关键词"
   attachment_extensions:
     - ".rld"
+    - ".swift"
+    - ".rwd"
+    - ".dat"
     - ".zip"
     - ".txt"
-    - ".csv"
-    - ".xls"
-    - ".xlsx"
-    - ".rar"
 
 rules:
   file_size_warning_kb: 20
+  historical_size_warning_ratio: 0.8
   continuous_missing_warning_days: 2
 
 report:

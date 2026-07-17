@@ -11,6 +11,15 @@ def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: 
     stat = stat_date.isoformat()
     previous = (stat_date - timedelta(days=1)).isoformat()
     today_attachments = db.attachment_rows_for_date(stat)
+    fixed_warning_kb = float(config["rules"].get("file_size_warning_kb", 20))
+    historical_ratio = float(config["rules"].get("historical_size_warning_ratio", 0.8))
+    historical_averages = db.historical_average_sizes_before_date(stat, fixed_warning_kb)
+    today_attachments = _apply_historical_size_warnings(
+        today_attachments,
+        historical_averages,
+        fixed_warning_kb,
+        historical_ratio,
+    )
     yesterday_status = db.daily_rows_for_date(previous)
     known_before_today = db.known_masts_before_date(stat)
 
@@ -73,6 +82,32 @@ def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: 
 
     logger.info("识别测风塔 %s 座，今日缺失 %s 座，小文件异常 %s 个，未识别 %s 个", len(received_rows), len(missing_rows), len(size_warning_rows), len(unknown_rows))
     return DailyResult(stat, received_rows, missing_rows, continuous_missing_rows, size_warning_rows, today_attachments, unknown_rows, status_rows)
+
+
+def _apply_historical_size_warnings(
+    rows: list[dict],
+    historical_averages: dict[str, float],
+    fixed_warning_kb: float,
+    ratio: float,
+) -> list[dict]:
+    updated: list[dict] = []
+    ratio_percent = ratio * 100
+    for original in rows:
+        row = dict(original)
+        mast_id = str(row.get("normalized_mast_id") or "")
+        current_size = float(row.get("file_size_kb") or 0)
+        average_size = historical_averages.get(mast_id)
+        if average_size is not None:
+            threshold = average_size * ratio
+            row["historical_average_size_kb"] = round(average_size, 2)
+            row["historical_size_threshold_kb"] = round(threshold, 2)
+            if current_size >= fixed_warning_kb and current_size < threshold:
+                row["size_status"] = (
+                    f"低于历史平均值的 {ratio_percent:g}%"
+                    f"（历史均值 {average_size:.2f} KB，阈值 {threshold:.2f} KB）"
+                )
+        updated.append(row)
+    return updated
 
 
 def _missing_status(days: int) -> str:
