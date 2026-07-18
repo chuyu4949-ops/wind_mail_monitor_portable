@@ -100,7 +100,7 @@ class MonitorApp(tk.Tk):
         self.stat_date = tk.StringVar(value=(date.today() - timedelta(days=1)).isoformat())
         self.allowed_senders = tk.StringVar(value="\n".join(filters.get("allowed_senders", [])))
         self.subject_keywords = tk.StringVar(value="\n".join(filters.get("subject_keywords", [])))
-        self.invalid_mast_ids = tk.StringVar(value="\n".join(filters.get("invalid_mast_ids", [])))
+        self.monitored_mast_ids = tk.StringVar(value="\n".join(filters.get("monitored_mast_ids", [])))
         self.data_dir = tk.StringVar(value=storage.get("data_dir", "./data"))
         self.report_dir = tk.StringVar(value=storage.get("report_dir", "./reports"))
         self.skip_mail = tk.BooleanVar(value=False)
@@ -220,7 +220,7 @@ class MonitorApp(tk.Tk):
         self._compact_field(grid, 1, 0, "附件保存目录", self.data_dir, browse=lambda: self._browse_dir(self.data_dir))
         self._compact_field(grid, 1, 1, "日报保存目录", self.report_dir, browse=lambda: self._browse_dir(self.report_dir))
 
-        self._section_header(page, 3, "\uE9D2", "邮件筛选规则", "限定邮件来源，并排除不再监测的测风塔")
+        self._section_header(page, 3, "\uE9D2", "邮件筛选规则", "限定邮件来源，并可指定需要持续关注的测风塔")
         text_grid = tk.Frame(page, bg=SURFACE)
         text_grid.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         text_grid.columnconfigure(0, weight=1)
@@ -229,18 +229,18 @@ class MonitorApp(tk.Tk):
         text_grid.rowconfigure(1, weight=1)
         self.allowed_senders_text = self._text_box(text_grid, 0, 0, "允许发件人（每行一个）", self.allowed_senders.get(), height=7)
         self.subject_keywords_text = self._text_box(text_grid, 0, 1, "主题关键词（每行一个）", self.subject_keywords.get(), height=7)
-        self.invalid_mast_ids_text = self._text_box(
+        self.monitored_mast_ids_text = self._text_box(
             text_grid,
             1,
             0,
-            "无效塔号（每行一个）",
-            self.invalid_mast_ids.get(),
+            "关注塔号白名单（每行一个）",
+            self.monitored_mast_ids.get(),
             height=4,
             columnspan=2,
             pady=(16, 0),
         )
         page.rowconfigure(4, weight=1, minsize=300)
-        self._info_bar(page, 5, "无效塔号不会下载附件，也不会参与接收、缺测、连续缺测或异常数据提醒。")
+        self._info_bar(page, 5, "白名单为空时按原规则识别；填写后只分析白名单塔号，以及邮件主题命中关键词的数据。")
         return page
 
     def _run_page(self, parent: tk.Frame) -> tk.Frame:
@@ -465,7 +465,7 @@ class MonitorApp(tk.Tk):
         self.config_data["filter"].update(
             allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)),
             subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)),
-            invalid_mast_ids=_split_lines(self.invalid_mast_ids_text.get("1.0", tk.END)),
+            monitored_mast_ids=_split_lines(self.monitored_mast_ids_text.get("1.0", tk.END)),
             attachment_extensions=[".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"],
         )
         self.config_data["storage"].update(data_dir=self.data_dir.get().strip() or "./data", report_dir=self.report_dir.get().strip() or "./reports", log_dir="./logs", database_path="./database/wind_mail_monitor.db")

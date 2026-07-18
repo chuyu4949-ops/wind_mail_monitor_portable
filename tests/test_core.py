@@ -169,6 +169,33 @@ class CoreTests(unittest.TestCase):
         }
         self.assertTrue(_message_matches(mail, config))
 
+    def test_message_whitelist_accepts_monitored_mast_or_subject_keyword(self) -> None:
+        mail = MailMessage(
+            email_uid="u1",
+            subject="ordinary subject",
+            sender_name="",
+            sender_email="source@example.com",
+            received_time=datetime(2026, 7, 16, 8, 0, 0),
+            attachments=[("00908820260716m10.swift", b"data")],
+        )
+        base_filter = {
+            "allowed_senders": ["source@example.com"],
+            "subject_keywords": ["Molas"],
+        }
+
+        self.assertFalse(_message_matches(mail, {"filter": {**base_filter, "monitored_mast_ids": ["9357"]}}))
+        self.assertTrue(_message_matches(mail, {"filter": {**base_filter, "monitored_mast_ids": ["009088"]}}))
+
+        keyword_mail = MailMessage(
+            email_uid="u2",
+            subject="Molas wind data",
+            sender_name="",
+            sender_email="source@example.com",
+            received_time=datetime(2026, 7, 16, 8, 0, 0),
+            attachments=[("00908820260716m10.swift", b"data")],
+        )
+        self.assertTrue(_message_matches(keyword_mail, {"filter": {**base_filter, "monitored_mast_ids": ["9357"]}}))
+
     def test_sent_folder_mail_bypasses_inbox_sender_filter(self) -> None:
         mail = MailMessage(
             email_uid="Sent Messages:1",
@@ -518,39 +545,52 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(first[0].attachment.file_path, second[0].attachment.file_path)
             self.assertEqual(len(list((base / "data" / "2026-07-11" / "10").glob("*.rld"))), 1)
 
-    def test_invalid_mast_attachment_is_not_saved(self) -> None:
+    def test_whitelist_saves_monitored_mast_and_subject_keyword_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             config = {
                 "storage": {"data_dir": "data"},
                 "rules": {"file_size_warning_kb": 20},
-                "filter": {"invalid_mast_ids": ["009357"]},
+                "filter": {"monitored_mast_ids": ["009357"], "subject_keywords": ["Molas"]},
             }
-            mail = MailMessage(
-                email_uid="u1",
-                subject="9357 wind data",
-                sender_name="",
-                sender_email="source@example.com",
-                received_time=datetime(2026, 7, 16, 8, 0, 0),
-                attachments=[("009357_2026-07-16_00.00_1.rld", b"wind-data")],
-            )
+            messages = [
+                MailMessage(
+                    email_uid="u1",
+                    subject="ordinary wind data",
+                    sender_name="",
+                    sender_email="source@example.com",
+                    received_time=datetime(2026, 7, 16, 8, 0, 0),
+                    attachments=[
+                        ("009357_2026-07-16_00.00_1.rld", b"monitored"),
+                        ("00908820260716m10.swift", b"not-monitored"),
+                    ],
+                ),
+                MailMessage(
+                    email_uid="u2",
+                    subject="Molas wind data",
+                    sender_name="",
+                    sender_email="source@example.com",
+                    received_time=datetime(2026, 7, 16, 9, 0, 0),
+                    attachments=[("00908820260716m10.swift", b"keyword-match")],
+                ),
+            ]
 
-            saved = save_attachments(base, config, [mail], date(2026, 7, 16), SilentLogger())
+            saved = save_attachments(base, config, messages, date(2026, 7, 16), SilentLogger())
 
-            self.assertEqual(saved, [])
-            self.assertFalse((base / "data" / "2026-07-16" / "9357").exists())
+            self.assertEqual([row.attachment.normalized_mast_id for row in saved], ["9357", "9088"])
+            self.assertFalse((base / "data" / "2026-07-16" / "9088" / "00908820260716m10.swift").read_bytes() == b"not-monitored")
 
-    def test_invalid_mast_is_excluded_from_all_daily_alerts(self) -> None:
+    def test_whitelist_controls_missing_baseline_and_keeps_keyword_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "test.db")
             db.initialize()
 
-            def attachment(uid: str, stat: str, mast_id: str, size_kb: float) -> AttachmentRecord:
+            def attachment(uid: str, stat: str, mast_id: str, size_kb: float, subject: str = "ordinary") -> AttachmentRecord:
                 raw_code = mast_id.zfill(6)
                 filename = f"{raw_code}_{stat}_00.00_1.rld"
                 return AttachmentRecord(
                     uid,
-                    "wind data",
+                    subject,
                     "source@example.com",
                     raw_code,
                     mast_id,
@@ -568,16 +608,16 @@ class CoreTests(unittest.TestCase):
 
             db.upsert_attachment_records(
                 [
-                    attachment("old-invalid", "2026-07-15", "9357", 100),
-                    attachment("today-invalid", "2026-07-16", "9357", 10),
-                    attachment("today-valid", "2026-07-16", "9088", 40),
+                    attachment("old-nonwhite", "2026-07-15", "120166", 100),
+                    attachment("today-keyword", "2026-07-16", "9088", 40, "Molas wind data"),
+                    attachment("today-ignored", "2026-07-16", "7454", 40),
                 ]
             )
 
             result = calculate_daily_status(
                 db,
                 {
-                    "filter": {"invalid_mast_ids": ["009357"]},
+                    "filter": {"monitored_mast_ids": ["009357"], "subject_keywords": ["Molas"]},
                     "rules": {
                         "file_size_warning_kb": 20,
                         "historical_size_warning_ratio": 0.8,
@@ -589,10 +629,10 @@ class CoreTests(unittest.TestCase):
             )
 
             self.assertEqual([row["normalized_mast_id"] for row in result.received_rows], ["9088"])
-            self.assertEqual(result.missing_rows, [])
-            self.assertEqual(result.continuous_missing_rows, [])
+            self.assertEqual([row["normalized_mast_id"] for row in result.missing_rows], ["9357"])
             self.assertEqual(result.size_warning_rows, [])
-            self.assertNotIn("9357", {row.get("normalized_mast_id") for row in result.attachment_rows})
+            self.assertNotIn("120166", {row.get("normalized_mast_id") for row in result.missing_rows})
+            self.assertNotIn("7454", {row.get("normalized_mast_id") for row in result.attachment_rows})
 
     def test_size_warning_uses_fixed_threshold_and_historical_average(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

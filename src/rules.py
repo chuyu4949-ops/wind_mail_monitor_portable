@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from logging import Logger
 
 from .database import Database
+from .filter_rules import subject_matches_keywords
 from .mast_parser import normalized_mast_id_set
 from .models import DailyResult, DailyStatusRow
 
@@ -11,12 +12,16 @@ from .models import DailyResult, DailyStatusRow
 def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: Logger) -> DailyResult:
     stat = stat_date.isoformat()
     previous = (stat_date - timedelta(days=1)).isoformat()
-    invalid_mast_ids = normalized_mast_id_set(config.get("filter", {}).get("invalid_mast_ids", []))
-    today_attachments = [
-        row
-        for row in db.attachment_rows_for_date(stat)
-        if str(row.get("normalized_mast_id") or "") not in invalid_mast_ids
-    ]
+    filters = config.get("filter", {})
+    monitored_mast_ids = normalized_mast_id_set(filters.get("monitored_mast_ids", []))
+    today_attachments = db.attachment_rows_for_date(stat)
+    if monitored_mast_ids:
+        today_attachments = [
+            row
+            for row in today_attachments
+            if str(row.get("normalized_mast_id") or "") in monitored_mast_ids
+            or subject_matches_keywords(str(row.get("subject") or ""), filters.get("subject_keywords", []))
+        ]
     fixed_warning_kb = float(config["rules"].get("file_size_warning_kb", 20))
     historical_ratio = float(config["rules"].get("historical_size_warning_ratio", 0.8))
     historical_averages = db.historical_average_sizes_before_date(stat, fixed_warning_kb)
@@ -26,16 +31,15 @@ def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: 
         fixed_warning_kb,
         historical_ratio,
     )
-    yesterday_status = [
-        row
-        for row in db.daily_rows_for_date(previous)
-        if str(row.get("normalized_mast_id") or "") not in invalid_mast_ids
-    ]
-    known_before_today = [
-        row
-        for row in db.known_masts_before_date(stat)
-        if str(row.get("normalized_mast_id") or "") not in invalid_mast_ids
-    ]
+    yesterday_status = db.daily_rows_for_date(previous)
+    known_before_today = db.known_masts_before_date(stat)
+    if monitored_mast_ids:
+        yesterday_status = [
+            row for row in yesterday_status if str(row.get("normalized_mast_id") or "") in monitored_mast_ids
+        ]
+        known_before_today = [
+            row for row in known_before_today if str(row.get("normalized_mast_id") or "") in monitored_mast_ids
+        ]
 
     normal_statuses = {"正常", "姝ｅ父"}
     warning_prefixes = ("文件小于", "鏂囦欢灏忎簬")
@@ -57,6 +61,9 @@ def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: 
     }
     for mast_id, row in yesterday_map.items():
         expected_display_names.setdefault(mast_id, row.get("display_name") or mast_id)
+    if monitored_mast_ids:
+        for mast_id in monitored_mast_ids:
+            expected_display_names.setdefault(mast_id, f"{mast_id}#测风塔")
 
     today_ids = set(grouped)
     missing_ids = set(expected_display_names) - today_ids
@@ -95,12 +102,12 @@ def calculate_daily_status(db: Database, config: dict, stat_date: date, logger: 
         status_rows.append(DailyStatusRow(stat, mast_id, display_name, 0, 0, 0, 0, 1, days, status, 0))
 
     logger.info(
-        "识别测风塔 %s 座，今日缺失 %s 座，文件大小异常 %s 个，未识别 %s 个，无效塔号 %s 个",
+        "识别测风塔 %s 座，今日缺失 %s 座，文件大小异常 %s 个，未识别 %s 个，关注塔号 %s 个",
         len(received_rows),
         len(missing_rows),
         len(size_warning_rows),
         len(unknown_rows),
-        len(invalid_mast_ids),
+        len(monitored_mast_ids),
     )
     return DailyResult(stat, received_rows, missing_rows, continuous_missing_rows, size_warning_rows, today_attachments, unknown_rows, status_rows)
 

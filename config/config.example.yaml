@@ -15,7 +15,7 @@ filter:
   subject_keywords:
     - "塔号"
     - "邮箱主题关键词"
-  invalid_mast_ids: []
+  monitored_mast_ids: []
   attachment_extensions:
     - ".rld"
     - ".swift"

@@ -4,6 +4,7 @@ from datetime import date
 from logging import Logger
 from pathlib import Path
 
+from .filter_rules import subject_matches_keywords
 from .mast_parser import normalized_mast_id_set, parse_attachment, payload_has_stat_date
 from .models import AttachmentRecord, EmailRecord, MailMessage, SavedAttachment
 
@@ -11,7 +12,8 @@ from .models import AttachmentRecord, EmailRecord, MailMessage, SavedAttachment
 def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], stat_date: date, logger: Logger) -> list[SavedAttachment]:
     data_dir = base_dir / config["storage"]["data_dir"] / stat_date.isoformat()
     warning_kb = float(config["rules"]["file_size_warning_kb"])
-    invalid_mast_ids = normalized_mast_id_set(config.get("filter", {}).get("invalid_mast_ids", []))
+    filters = config.get("filter", {})
+    monitored_mast_ids = normalized_mast_id_set(filters.get("monitored_mast_ids", []))
     saved: list[SavedAttachment] = []
 
     for mail in messages:
@@ -23,10 +25,11 @@ def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], 
             received_time=mail.received_time.isoformat(sep=" "),
             has_attachment=1 if mail.attachments else 0,
         )
+        subject_keyword_match = subject_matches_keywords(mail.subject, filters.get("subject_keywords", []))
         for filename, content in mail.attachments:
             parsed = parse_attachment(filename, subject=mail.subject, default_year=stat_date.year)
-            if parsed["normalized_mast_id"] in invalid_mast_ids:
-                logger.info("跳过无效塔号附件：%s（塔号 %s）", filename, parsed["normalized_mast_id"])
+            if monitored_mast_ids and parsed["normalized_mast_id"] not in monitored_mast_ids and not subject_keyword_match:
+                logger.info("跳过非关注塔号附件：%s（识别塔号 %s）", filename, parsed["normalized_mast_id"] or "未知")
                 continue
             mast_dir = data_dir / (parsed["normalized_mast_id"] or "未识别附件")
             mast_dir.mkdir(parents=True, exist_ok=True)

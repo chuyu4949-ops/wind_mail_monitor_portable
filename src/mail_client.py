@@ -9,7 +9,8 @@ from email.header import decode_header
 from email.utils import getaddresses, parsedate_to_datetime
 from logging import Logger
 
-from .mast_parser import is_supported_wind_filename, parse_attachment, payload_has_stat_date
+from .filter_rules import active_subject_keywords
+from .mast_parser import is_supported_wind_filename, normalized_mast_id_set, parse_attachment, payload_has_stat_date
 from .mail_provider import apply_mail_provider_defaults, supported_provider_text
 from .models import MailMessage
 
@@ -203,12 +204,21 @@ def _to_mail_message(uid: str, msg: email.message.Message, config: dict, source_
 
 def _message_matches(mail: MailMessage, config: dict, stat_date: date | None = None) -> bool:
     allowed_senders = _active_allowed_senders(config["filter"].get("allowed_senders", []))
-    keywords = _active_subject_keywords(config["filter"].get("subject_keywords", []))
+    keywords = active_subject_keywords(config["filter"].get("subject_keywords", []))
+    monitored_mast_ids = normalized_mast_id_set(config["filter"].get("monitored_mast_ids", []))
     from_sent_folder = mail.source_folder.upper() != "INBOX"
     sender_ok = from_sent_folder or not allowed_senders or mail.sender_email.lower() in allowed_senders
-    keyword_ok = not keywords or any(keyword.lower() in mail.subject.lower() for keyword in keywords)
+    subject_keyword_match = any(keyword.lower() in mail.subject.lower() for keyword in keywords)
     attachment_name_ok = any(is_supported_wind_filename(filename) for filename, _ in mail.attachments)
-    if not (bool(mail.attachments) and sender_ok and (keyword_ok or attachment_name_ok)):
+    if monitored_mast_ids:
+        monitored_attachment_ok = any(
+            parse_attachment(filename, subject=mail.subject).get("normalized_mast_id") in monitored_mast_ids
+            for filename, _ in mail.attachments
+        )
+        selection_ok = monitored_attachment_ok or subject_keyword_match
+    else:
+        selection_ok = not keywords or subject_keyword_match or attachment_name_ok
+    if not (bool(mail.attachments) and sender_ok and selection_ok):
         return False
     if stat_date is None:
         return True
@@ -221,11 +231,6 @@ def _message_matches(mail: MailMessage, config: dict, stat_date: date | None = N
 def _active_allowed_senders(values: list[str]) -> set[str]:
     placeholders = {"******@***.com", "***@***.com", "example@example.com"}
     return {item.strip().lower() for item in values if item.strip() and item.strip().lower() not in placeholders}
-
-
-def _active_subject_keywords(values: list[str]) -> list[str]:
-    placeholders = {"塔号", "邮箱主题关键词"}
-    return [item.strip() for item in values if item.strip() and item.strip() not in placeholders]
 
 
 def _message_has_stat_date(mail: MailMessage, stat_date: date) -> bool:
