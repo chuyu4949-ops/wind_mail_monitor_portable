@@ -4,13 +4,14 @@ from datetime import date
 from logging import Logger
 from pathlib import Path
 
-from .mast_parser import parse_attachment, payload_has_stat_date
+from .mast_parser import normalized_mast_id_set, parse_attachment, payload_has_stat_date
 from .models import AttachmentRecord, EmailRecord, MailMessage, SavedAttachment
 
 
 def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], stat_date: date, logger: Logger) -> list[SavedAttachment]:
     data_dir = base_dir / config["storage"]["data_dir"] / stat_date.isoformat()
     warning_kb = float(config["rules"]["file_size_warning_kb"])
+    invalid_mast_ids = normalized_mast_id_set(config.get("filter", {}).get("invalid_mast_ids", []))
     saved: list[SavedAttachment] = []
 
     for mail in messages:
@@ -24,6 +25,9 @@ def save_attachments(base_dir: Path, config: dict, messages: list[MailMessage], 
         )
         for filename, content in mail.attachments:
             parsed = parse_attachment(filename, subject=mail.subject, default_year=stat_date.year)
+            if parsed["normalized_mast_id"] in invalid_mast_ids:
+                logger.info("跳过无效塔号附件：%s（塔号 %s）", filename, parsed["normalized_mast_id"])
+                continue
             mast_dir = data_dir / (parsed["normalized_mast_id"] or "未识别附件")
             mast_dir.mkdir(parents=True, exist_ok=True)
             path = _deduplicated_path(mast_dir / filename, content)

@@ -518,6 +518,82 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(first[0].attachment.file_path, second[0].attachment.file_path)
             self.assertEqual(len(list((base / "data" / "2026-07-11" / "10").glob("*.rld"))), 1)
 
+    def test_invalid_mast_attachment_is_not_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            config = {
+                "storage": {"data_dir": "data"},
+                "rules": {"file_size_warning_kb": 20},
+                "filter": {"invalid_mast_ids": ["009357"]},
+            }
+            mail = MailMessage(
+                email_uid="u1",
+                subject="9357 wind data",
+                sender_name="",
+                sender_email="source@example.com",
+                received_time=datetime(2026, 7, 16, 8, 0, 0),
+                attachments=[("009357_2026-07-16_00.00_1.rld", b"wind-data")],
+            )
+
+            saved = save_attachments(base, config, [mail], date(2026, 7, 16), SilentLogger())
+
+            self.assertEqual(saved, [])
+            self.assertFalse((base / "data" / "2026-07-16" / "9357").exists())
+
+    def test_invalid_mast_is_excluded_from_all_daily_alerts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "test.db")
+            db.initialize()
+
+            def attachment(uid: str, stat: str, mast_id: str, size_kb: float) -> AttachmentRecord:
+                raw_code = mast_id.zfill(6)
+                filename = f"{raw_code}_{stat}_00.00_1.rld"
+                return AttachmentRecord(
+                    uid,
+                    "wind data",
+                    "source@example.com",
+                    raw_code,
+                    mast_id,
+                    f"{mast_id}#测风塔",
+                    filename,
+                    str(Path(tmp) / stat / filename),
+                    ".rld",
+                    int(size_kb * 1024),
+                    size_kb,
+                    stat,
+                    "",
+                    stat,
+                    "正常" if size_kb >= 20 else "文件小于 20 KB",
+                )
+
+            db.upsert_attachment_records(
+                [
+                    attachment("old-invalid", "2026-07-15", "9357", 100),
+                    attachment("today-invalid", "2026-07-16", "9357", 10),
+                    attachment("today-valid", "2026-07-16", "9088", 40),
+                ]
+            )
+
+            result = calculate_daily_status(
+                db,
+                {
+                    "filter": {"invalid_mast_ids": ["009357"]},
+                    "rules": {
+                        "file_size_warning_kb": 20,
+                        "historical_size_warning_ratio": 0.8,
+                        "continuous_missing_warning_days": 2,
+                    },
+                },
+                date(2026, 7, 16),
+                SilentLogger(),
+            )
+
+            self.assertEqual([row["normalized_mast_id"] for row in result.received_rows], ["9088"])
+            self.assertEqual(result.missing_rows, [])
+            self.assertEqual(result.continuous_missing_rows, [])
+            self.assertEqual(result.size_warning_rows, [])
+            self.assertNotIn("9357", {row.get("normalized_mast_id") for row in result.attachment_rows})
+
     def test_size_warning_uses_fixed_threshold_and_historical_average(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(Path(tmp) / "test.db")

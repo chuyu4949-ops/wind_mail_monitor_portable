@@ -19,6 +19,16 @@ def normalize_code(raw_code: str) -> str:
     return stripped or raw_code
 
 
+def normalized_mast_id_set(values: object) -> set[str]:
+    if not isinstance(values, (list, tuple, set)):
+        return set()
+    return {
+        normalize_code(str(value).strip())
+        for value in values
+        if str(value).strip() and str(value).strip().isdigit()
+    }
+
+
 def filename_starts_with_six_digits(filename: str) -> bool:
     name = Path(filename).name
     return len(name) >= 6 and name[:6].isdigit()

@@ -100,6 +100,7 @@ class MonitorApp(tk.Tk):
         self.stat_date = tk.StringVar(value=(date.today() - timedelta(days=1)).isoformat())
         self.allowed_senders = tk.StringVar(value="\n".join(filters.get("allowed_senders", [])))
         self.subject_keywords = tk.StringVar(value="\n".join(filters.get("subject_keywords", [])))
+        self.invalid_mast_ids = tk.StringVar(value="\n".join(filters.get("invalid_mast_ids", [])))
         self.data_dir = tk.StringVar(value=storage.get("data_dir", "./data"))
         self.report_dir = tk.StringVar(value=storage.get("report_dir", "./reports"))
         self.skip_mail = tk.BooleanVar(value=False)
@@ -219,16 +220,27 @@ class MonitorApp(tk.Tk):
         self._compact_field(grid, 1, 0, "附件保存目录", self.data_dir, browse=lambda: self._browse_dir(self.data_dir))
         self._compact_field(grid, 1, 1, "日报保存目录", self.report_dir, browse=lambda: self._browse_dir(self.report_dir))
 
-        self._section_header(page, 3, "\uE9D2", "邮件筛选规则", "限定发件人与主题关键词，提升识别准确性")
+        self._section_header(page, 3, "\uE9D2", "邮件筛选规则", "限定邮件来源，并排除不再监测的测风塔")
         text_grid = tk.Frame(page, bg=SURFACE)
         text_grid.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         text_grid.columnconfigure(0, weight=1)
         text_grid.columnconfigure(1, weight=1)
         text_grid.rowconfigure(0, weight=1)
+        text_grid.rowconfigure(1, weight=1)
         self.allowed_senders_text = self._text_box(text_grid, 0, 0, "允许发件人（每行一个）", self.allowed_senders.get(), height=7)
         self.subject_keywords_text = self._text_box(text_grid, 0, 1, "主题关键词（每行一个）", self.subject_keywords.get(), height=7)
-        page.rowconfigure(4, weight=1, minsize=170)
-        self._info_bar(page, 5, "允许发件人与主题关键词支持多行输入，系统将按规则匹配邮件。")
+        self.invalid_mast_ids_text = self._text_box(
+            text_grid,
+            1,
+            0,
+            "无效塔号（每行一个）",
+            self.invalid_mast_ids.get(),
+            height=4,
+            columnspan=2,
+            pady=(16, 0),
+        )
+        page.rowconfigure(4, weight=1, minsize=300)
+        self._info_bar(page, 5, "无效塔号不会下载附件，也不会参与接收、缺测、连续缺测或异常数据提醒。")
         return page
 
     def _run_page(self, parent: tk.Frame) -> tk.Frame:
@@ -363,9 +375,20 @@ class MonitorApp(tk.Tk):
         if browse:
             tk.Button(box, text="\uE8B7", font=ICON_FONT, fg=TEXT, bg=INPUT_BG, activebackground="#f1f5f9", relief=tk.FLAT, command=browse, cursor="hand2", width=3).grid(row=0, column=1, sticky="e", padx=(0, 8))
 
-    def _text_box(self, parent: tk.Frame, row: int, column: int, label: str, value: str, height: int) -> tk.Text:
+    def _text_box(
+        self,
+        parent: tk.Frame,
+        row: int,
+        column: int,
+        label: str,
+        value: str,
+        height: int,
+        columnspan: int = 1,
+        pady: tuple[int, int] = (0, 0),
+    ) -> tk.Text:
         cell = tk.Frame(parent, bg=SURFACE)
-        cell.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 18, 18 if column == 0 else 0))
+        padx = (0, 0) if columnspan > 1 else (0 if column == 0 else 18, 18 if column == 0 else 0)
+        cell.grid(row=row, column=column, columnspan=columnspan, sticky="nsew", padx=padx, pady=pady)
         cell.columnconfigure(0, weight=1)
         cell.rowconfigure(1, weight=1)
         tk.Label(cell, text=label, font=(FONT, 11, "bold"), fg=TEXT, bg=SURFACE).grid(row=0, column=0, sticky="w", pady=(0, 8))
@@ -439,7 +462,12 @@ class MonitorApp(tk.Tk):
         self.smtp_server.set(mail_cfg.get("smtp_server", ""))
         self.config_data["report"].update(report_receivers=_split_csv(self.receivers.get()), report_cc=_split_csv(self.cc.get()), send_email=bool(self.send_email.get()), generate_excel=True, generate_html=True, send_time="09:00", statistic_period="previous_day_00_to_24")
         self.config_data["rules"].update(file_size_warning_kb=int(self.file_size_warning_kb.get()), continuous_missing_warning_days=int(self.continuous_missing_days.get()))
-        self.config_data["filter"].update(allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)), subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)), attachment_extensions=[".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"])
+        self.config_data["filter"].update(
+            allowed_senders=_split_lines(self.allowed_senders_text.get("1.0", tk.END)),
+            subject_keywords=_split_lines(self.subject_keywords_text.get("1.0", tk.END)),
+            invalid_mast_ids=_split_lines(self.invalid_mast_ids_text.get("1.0", tk.END)),
+            attachment_extensions=[".rld", ".swift", ".rwd", ".dat", ".zip", ".txt"],
+        )
         self.config_data["storage"].update(data_dir=self.data_dir.get().strip() or "./data", report_dir=self.report_dir.get().strip() or "./reports", log_dir="./logs", database_path="./database/wind_mail_monitor.db")
 
     def run_monitor(self) -> None:
