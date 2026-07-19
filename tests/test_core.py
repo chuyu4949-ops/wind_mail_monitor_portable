@@ -1,9 +1,10 @@
 ﻿from __future__ import annotations
 
 import sqlite3
+import imaplib
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 import zipfile
 import base64
 import json
@@ -25,7 +26,7 @@ from src.licensing.license_validator import validate_signed_license
 from src.licensing.license_watermark import watermark_text
 from src.licensing.machine_fingerprint import MachineFingerprint, _normalize, _short_machine_code
 from src.licensing.time_guard import check_and_update_time_state
-from src.mail_client import _fetch_once, _imap_date, _mailboxes_to_scan, _message_matches, _search_before_date
+from src.mail_client import _fetch_once, _imap_date, _mailboxes_to_scan, _message_matches, _search_before_date, _select_mailbox
 from src.mail_provider import apply_mail_provider_defaults, provider_for_account
 from src.mast_parser import is_supported_wind_filename, parse_attachment, payload_has_stat_date
 from src.models import AttachmentRecord, DailyStatusRow, MailMessage
@@ -306,6 +307,19 @@ class CoreTests(unittest.TestCase):
             ],
         )
         self.assertEqual(_mailboxes_to_scan(client, MagicMock()), ["INBOX", "Sent Items"])
+
+    def test_mailbox_select_falls_back_when_examine_is_rejected(self) -> None:
+        client = MagicMock()
+        client.select.side_effect = [
+            imaplib.IMAP4.error("EXAMINE command error: BAD [b'EXAMINE parameters!']"),
+            ("OK", [b"12"]),
+        ]
+
+        status, data = _select_mailbox(client, "INBOX", MagicMock())
+
+        self.assertEqual(status, "OK")
+        self.assertEqual(data, [b"12"])
+        self.assertEqual(client.select.call_args_list, [call("INBOX", readonly=True), call("INBOX")])
 
     def test_late_historical_mail_requires_explicit_stat_date(self) -> None:
         config = {

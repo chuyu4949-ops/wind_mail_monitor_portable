@@ -145,7 +145,7 @@ def _fetch_mailbox(
     stat_date: date,
     logger: Logger,
 ) -> list[MailMessage]:
-    status, select_data = client.select(mailbox, readonly=True)
+    status, select_data = _select_mailbox(client, mailbox, logger)
     if status != "OK":
         detail = _decode_imap_response(select_data)
         if mailbox.upper() == "INBOX":
@@ -177,6 +177,25 @@ def _fetch_mailbox(
         if index % 50 == 0 or index == len(message_ids):
             logger.info("%s 邮件读取进度：%s/%s", mailbox, index, len(message_ids))
     return messages
+
+
+def _select_mailbox(
+    client: imaplib.IMAP4_SSL,
+    mailbox: str,
+    logger: Logger,
+) -> tuple[str, object]:
+    try:
+        status, data = client.select(mailbox, readonly=True)
+        if status == "OK":
+            return status, data
+        logger.warning("邮箱服务器拒绝只读打开文件夹 %s，将改用兼容模式：%s", mailbox, _decode_imap_response(data))
+    except imaplib.IMAP4.error as exc:
+        logger.warning("邮箱服务器不支持 EXAMINE，只读打开 %s 失败，将改用 SELECT：%s", mailbox, exc)
+
+    try:
+        return client.select(mailbox)
+    except imaplib.IMAP4.error as exc:
+        return "BAD", [str(exc).encode("utf-8", errors="replace")]
 
 
 def _to_mail_message(uid: str, msg: email.message.Message, config: dict, source_folder: str = "INBOX") -> MailMessage:
